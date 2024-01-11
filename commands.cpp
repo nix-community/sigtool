@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <sstream>
@@ -408,37 +409,20 @@ static std::string inferIdentifier(const std::string& filename) {
     return basename;
 }
 
-// Sign a single Mach-O file in place (handles allocation via codesign_allocate
-// and injection of the new signature). `signTemplate` carries everything the
-// CodeDirectory needs; `binaryFile` and `force` are flow control.
-static void signOneMachO(const Commands::SignOptions &signTemplate,
-                         const std::string &binaryFile,
-                         bool force) {
-    MachOList list{binaryFile};
+static void codesignAllocate(
+        const std::string &binaryFile,
+        const std::vector<std::string> &extraArguments,
+        std::function<void(const std::string&)> withTempfile = [](const std::string&) {}) {
     std::vector<std::string> arguments;
 
     arguments.emplace_back("codesign_allocate");
     arguments.emplace_back("-i");
     arguments.emplace_back(binaryFile);
 
-    Commands::SignOptions perFile = signTemplate;
-    perFile.filename = binaryFile;
-
-    for (const auto &macho : list.machos) {
-        auto codeSignature = macho->getCodeSignatureLoadCommand();
-        if (!force && codeSignature) {
-            throw std::runtime_error{"file is already signed. pass -f to sign regardless."};
-        }
-        auto sb = signMachO(perFile, macho);
-
-        arguments.emplace_back("-A");
-        arguments.emplace_back(std::to_string(macho->header.cpuType));
-        arguments.emplace_back(std::to_string(macho->header.cpuSubType & ~CPU_SUBTYPE_MASK));
-
-        size_t len = sb.length();
-        len = ((len + 0xf) & ~0xf) + 1024; // align and pad
-        arguments.push_back(std::to_string(len));
-    }
+    arguments.insert(
+            arguments.end(),
+            extraArguments.begin(),
+            extraArguments.end());
 
     std::unique_ptr<char, decltype(&std::free)> tempfileName{
             strdup((binaryFile + "XXXXXX").c_str()), std::free};
@@ -488,13 +472,51 @@ static void signOneMachO(const Commands::SignOptions &signTemplate,
         throw std::runtime_error{std::string{"close: "} + strerror(tempfile)};
     }
 
-    Commands::SignOptions injectOpts = signTemplate;
-    injectOpts.filename = std::string(tempfileName.get());
-    Commands::inject(injectOpts);
+    withTempfile(tempfileName.get());
 
     if (rename(tempfileName.get(), binaryFile.c_str()) != 0) {
         throw std::runtime_error{"rename failed"};
     }
+}
+
+
+// Sign a single Mach-O file in place (handles allocation via codesign_allocate
+// and injection of the new signature). `signTemplate` carries everything the
+// CodeDirectory needs; `binaryFile` and `force` are flow control.
+static void signOneMachO(const Commands::SignOptions &signTemplate,
+                         const std::string &binaryFile,
+                         bool force) {
+    MachOList list{binaryFile};
+    std::vector<std::string> arguments;
+
+    Commands::SignOptions perFile = signTemplate;
+    perFile.filename = binaryFile;
+
+    for (const auto &macho : list.machos) {
+        auto codeSignature = macho->getCodeSignatureLoadCommand();
+        if (!force && codeSignature) {
+            throw std::runtime_error{"file is already signed. pass -f to sign regardless."};
+        }
+        auto sb = signMachO(perFile, macho);
+
+        arguments.emplace_back("-A");
+        arguments.emplace_back(std::to_string(macho->header.cpuType));
+        arguments.emplace_back(std::to_string(macho->header.cpuSubType & ~CPU_SUBTYPE_MASK));
+
+        size_t len = sb.length();
+        len = ((len + 0xf) & ~0xf) + 1024; // align and pad
+        arguments.push_back(std::to_string(len));
+    }
+
+    codesignAllocate(
+            binaryFile,
+            arguments,
+            [&] (const std::string &tempfileName) {
+                // inject
+                Commands::SignOptions injectOpts = signTemplate;
+                injectOpts.filename = tempfileName;
+                Commands::inject(injectOpts);
+            });
 }
 
 static void writeFileBytes(const std::string &path, const std::string &bytes) {
@@ -586,5 +608,9 @@ int Commands::codesign(const CodesignOptions &options, const std::string &filena
     signTemplate.codeResourcesPath = crPath;
     signOneMachO(signTemplate, bundle.binaryPath, options.force);
     return 0;
+}
+
+void Commands::removeSignature(const std::string &filename) {
+    codesignAllocate(filename, { "-r" });
 }
 };
