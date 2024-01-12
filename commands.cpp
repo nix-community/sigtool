@@ -610,6 +610,17 @@ int Commands::codesign(const CodesignOptions &options, const std::string &filena
     return 0;
 }
 
+bool Commands::verifySignature(const std::string &filename) {
+    MachOList list{filename};
+    for (const auto &macho : list.machos) {
+        if (macho->getCodeSignatureLoadCommand()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void Commands::removeSignature(const std::string &filename) {
     codesignAllocate(filename, { "-r" });
 }

@@ -43,6 +43,7 @@ namespace Commands {
     int inject(const SignOptions& options);
     int generate(const SignOptions& options);
     int codesign(const CodesignOptions& options, const std::string& file);
+    bool verifySignature(const std::string& file);
     void removeSignature(const std::string& file);
 };
 };

@@ -21,10 +21,12 @@ static int run(int argc, char **argv) {
             preserveMetadata;
     bool force = false;
     bool remove = false;
+    bool verify = false;
     bool generateEntitlementDER = false;
     std::vector<std::string> files;
     auto sign = app.add_option("-s,--sign", identity, "Code signing identity");
     app.add_flag("--remove-signature", remove, "Remove existing signature");
+    app.add_flag("-v", verify, "Verify existing signatures");
     app.add_option("-i,--identifier", identifier, "File identifier");
     app.add_flag("-f,--force", force, "Replace any existing signatures");
     app.add_option("--entitlements", entitlements, "Entitlements plist");
@@ -54,7 +56,12 @@ static int run(int argc, char **argv) {
                             "is not available with ad-hoc signatures)"}};
     }
 
-    if (remove) {
+    if (verify) {
+        for (const auto &f : files) {
+            if (!SigTool::Commands::verifySignature(f))
+                return 1;
+        }
+    } else if (remove) {
         for (const auto &f : files) {
             SigTool::Commands::removeSignature(f);
         }
