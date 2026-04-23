@@ -71,12 +71,13 @@ MachO::MachO(std::ifstream &f, off_t offset, size_t size) : header{}, offset{off
         uint32_t type = ReadLE::readUInt32(f);
         uint32_t cmdSize = ReadLE::readUInt32(f);
 
+        std::shared_ptr<LoadCommand> lc;
         switch (type) {
             case LC_SEGMENT_64: {
                 auto lcSegment = std::make_shared<Segment64LoadCommand>(type, cmdSize);
                 f.read(reinterpret_cast<char *>(&lcSegment->data),
                        sizeof(Segment64LoadCommand::data));
-                loadCommands.push_back(lcSegment);
+                lc = lcSegment;
                 break;
             }
 
@@ -84,14 +85,15 @@ MachO::MachO(std::ifstream &f, off_t offset, size_t size) : header{}, offset{off
                 auto lcCodeSignature = std::make_shared<CodeSignatureLoadCommand>(type, cmdSize);
                 f.read(reinterpret_cast<char *>(&lcCodeSignature->data),
                        sizeof(CodeSignatureLoadCommand::data));
-                loadCommands.push_back(lcCodeSignature);
+                lc = lcCodeSignature;
                 break;
             }
 
             default:
-                auto lc = std::make_shared<LoadCommand>(type, cmdSize);
-                loadCommands.push_back(lc);
+                lc = std::make_shared<LoadCommand>(type, cmdSize);
         }
+        lc->fileOffset = start;
+        loadCommands.push_back(lc);
 
         size_t actualRead = f.tellg() - start;
 

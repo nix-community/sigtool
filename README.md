@@ -33,6 +33,7 @@ Subcommands:
   generate                    Generate an embedded signature and emit on stdout
   inject                      Generate and inject embedded signature
   show-arch                   Show architecture
+  remove-signature            Remove an existing embedded code signature (thin only)
 ```
 
 ### codesign
@@ -46,11 +47,18 @@ Positionals:
 
 Options:
   -h,--help                   Print this help message and exit
-  -s TEXT REQUIRED            Code signing identity
+  -s,--sign TEXT              Code signing identity (required unless --remove-signature)
   -i,--identifier TEXT        File identifier
   -f,--force                  Replace any existing signatures
   --entitlements TEXT         Entitlements plist
+  --remove-signature          Remove any existing code signature (thin Mach-O only)
 ```
+
+`--remove-signature` produces the same bytes as Apple's `codesign
+--remove-signature` for thin Mach-O files: the `LC_CODE_SIGNATURE`
+load command is dropped, `__LINKEDIT.filesize` is shrunk to the end of
+the remaining linker tables, and the signature blob plus any alignment
+padding is truncated from the file. Fat binaries are not yet supported.
 
 
 ## Example signature
