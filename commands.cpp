@@ -1,8 +1,10 @@
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <memory>
 #include <string>
 #include <sstream>
+#include <vector>
 #include <sys/stat.h>
 #include <spawn.h>
 #include <unistd.h>
@@ -351,6 +353,179 @@ int Commands::codesign(const CodesignOptions &options, const std::string &filena
     // rename temp file to output
     if (rename(tempfileName.get(), filename.c_str()) != 0) {
         throw std::runtime_error{"rename failed"};
+    }
+
+    return 0;
+}
+
+// Highest file offset referenced by tables living inside __LINKEDIT.
+// Needed because codesign_allocate rejects files where __LINKEDIT extends
+// past the actual linker data, so we must shrink filesize to the end of
+// the tables rather than to where the signature started (which includes
+// alignment padding).
+static uint64_t computeLinkeditEnd(const std::string &filename,
+                                   off_t lcAreaStart,
+                                   uint32_t nCommands,
+                                   uint64_t linkeditStart,
+                                   uint64_t linkeditEnd) {
+    enum : uint32_t {
+        LC_SYMTAB_T = 0x02,
+        LC_DYSYMTAB_T = 0x0b,
+        LC_FUNCTION_STARTS_T = 0x26,
+        LC_DATA_IN_CODE_T = 0x29,
+        LC_DYLIB_CODE_SIGN_DRS_T = 0x2b,
+        LC_LINKER_OPT_HINT_T = 0x2e,
+        LC_DYLD_EXPORTS_TRIE_T = 0x80000033u,
+        LC_DYLD_CHAINED_FIXUPS_T = 0x80000034u,
+        LC_DYLD_INFO_T = 0x22,
+        LC_DYLD_INFO_ONLY_T = 0x80000022u,
+    };
+
+    std::ifstream f{filename, std::ifstream::in | std::ifstream::binary};
+    if (!f) {
+        throw std::runtime_error{std::string{"re-opening macho: "} + strerror(errno)};
+    }
+
+    uint64_t end = 0;
+    auto consider = [&](uint64_t off, uint64_t size) {
+        if (size == 0) return;
+        if (off < linkeditStart || off >= linkeditEnd) return;
+        if (off + size > end) end = off + size;
+    };
+
+    f.seekg(lcAreaStart);
+    for (uint32_t i = 0; i < nCommands; i++) {
+        off_t start = f.tellg();
+        uint32_t type = ReadLE::readUInt32(f);
+        uint32_t cmdSize = ReadLE::readUInt32(f);
+
+        auto u32 = [&](off_t rel) {
+            f.seekg(start + rel);
+            return ReadLE::readUInt32(f);
+        };
+
+        switch (type) {
+            case LC_SYMTAB_T: {
+                uint32_t symoff = u32(8), nsyms = u32(12);
+                uint32_t stroff = u32(16), strsize = u32(20);
+                consider(symoff, uint64_t(nsyms) * 16); // nlist_64
+                consider(stroff, strsize);
+                break;
+            }
+            case LC_DYSYMTAB_T: {
+                uint32_t tocoff = u32(8 + 32), ntoc = u32(8 + 36);
+                uint32_t modtaboff = u32(8 + 40), nmodtab = u32(8 + 44);
+                uint32_t extrefoff = u32(8 + 48), nextref = u32(8 + 52);
+                uint32_t indsymoff = u32(8 + 56), nindsym = u32(8 + 60);
+                uint32_t extreloff = u32(8 + 64), nextrel = u32(8 + 68);
+                uint32_t locreloff = u32(8 + 72), nlocrel = u32(8 + 76);
+                consider(tocoff, uint64_t(ntoc) * 8);
+                consider(modtaboff, uint64_t(nmodtab) * 56);
+                consider(extrefoff, uint64_t(nextref) * 8);
+                consider(indsymoff, uint64_t(nindsym) * 4);
+                consider(extreloff, uint64_t(nextrel) * 8);
+                consider(locreloff, uint64_t(nlocrel) * 8);
+                break;
+            }
+            case LC_DYLD_INFO_T:
+            case LC_DYLD_INFO_ONLY_T: {
+                for (int k = 0; k < 5; k++) {
+                    uint32_t off = u32(8 + k * 8);
+                    uint32_t size = u32(8 + k * 8 + 4);
+                    consider(off, size);
+                }
+                break;
+            }
+            case LC_FUNCTION_STARTS_T:
+            case LC_DATA_IN_CODE_T:
+            case LC_DYLIB_CODE_SIGN_DRS_T:
+            case LC_LINKER_OPT_HINT_T:
+            case LC_DYLD_EXPORTS_TRIE_T:
+            case LC_DYLD_CHAINED_FIXUPS_T: {
+                uint32_t off = u32(8), size = u32(12);
+                consider(off, size);
+                break;
+            }
+            default:
+                break;
+        }
+
+        f.seekg(start + cmdSize);
+    }
+    return end;
+}
+
+int Commands::removeSignature(const std::string &filename) {
+    MachOList list{filename};
+    if (list.machos.size() != 1) {
+        // Fat would need FatHeader rewriting + slice re-alignment.
+        throw std::runtime_error{
+                "--remove-signature is only supported on thin Mach-O files"};
+    }
+    auto macho = list.machos.front();
+    auto cs = macho->getCodeSignatureLoadCommand();
+    if (!cs) return 0; // matches Apple: exit 0 when already unsigned
+    auto linkedit = macho->getSegment64LoadCommand("__LINKEDIT");
+    if (!linkedit) {
+        throw std::runtime_error{"signed Mach-O has no __LINKEDIT segment"};
+    }
+
+    const off_t lcAreaStart = macho->offset + 4 /*magic*/ + sizeof(MachOHeader);
+    const uint64_t linkeditEnd =
+            linkedit->data.fileoff + linkedit->data.filesize;
+    uint64_t linkerDataEnd = computeLinkeditEnd(
+            filename, lcAreaStart, macho->header.nCommands,
+            linkedit->data.fileoff, linkeditEnd);
+    if (linkerDataEnd == 0) linkerDataEnd = linkedit->data.fileoff;
+
+    std::fstream f{filename, std::ios::in | std::ios::out | std::ios::binary};
+    if (!f) {
+        throw std::runtime_error{std::string{"opening macho file: "} + strerror(errno)};
+    }
+
+    // Drop LC_CODE_SIGNATURE: shift the tail up, zero the freed bytes.
+    const off_t lcAreaEnd = lcAreaStart + macho->header.sizeOfCmds;
+    const off_t csStart = cs->fileOffset;
+    const off_t csEnd = csStart + cs->cmdSize;
+    if (csEnd > lcAreaEnd) {
+        throw std::runtime_error{
+                "malformed Mach-O: LC_CODE_SIGNATURE extends past load command area"};
+    }
+    std::vector<char> tail(static_cast<size_t>(lcAreaEnd - csEnd));
+    if (!tail.empty()) {
+        f.seekg(csEnd);
+        f.read(tail.data(), tail.size());
+        if (f.fail()) {
+            throw std::runtime_error{"reading load command tail"};
+        }
+    }
+    f.clear();
+    f.seekp(csStart);
+    if (!tail.empty()) {
+        f.write(tail.data(), tail.size());
+    }
+    std::vector<char> zeros(cs->cmdSize, 0);
+    f.write(zeros.data(), zeros.size());
+
+
+    uint32_t newNCommands = macho->header.nCommands - 1;
+    uint32_t newSizeOfCmds = macho->header.sizeOfCmds - cs->cmdSize;
+    f.seekp(macho->offset + 4 /*magic*/ + offsetof(MachOHeader, nCommands));
+    f.write(reinterpret_cast<const char *>(&newNCommands), 4);
+    f.write(reinterpret_cast<const char *>(&newSizeOfCmds), 4);
+
+    // Shrink __LINKEDIT.filesize; leave vmsize alone (page size varies).
+    // Segment64 layout after 8-byte LC header: segname[16] vmaddr vmsize
+    // fileoff filesize (all u64) -> filesize at +8+40.
+    uint64_t newFilesize = linkerDataEnd - linkedit->data.fileoff;
+    f.seekp(linkedit->fileOffset + 8 + 40);
+    f.write(reinterpret_cast<const char *>(&newFilesize), 8);
+
+    f.flush();
+    f.close();
+
+    if (truncate(filename.c_str(), linkerDataEnd) != 0) {
+        throw std::runtime_error{std::string{"truncate: "} + strerror(errno)};
     }
 
     return 0;

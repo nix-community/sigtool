@@ -77,6 +77,7 @@ struct FatHeader {
 struct LoadCommand {
     uint32_t type;
     uint32_t cmdSize;
+    off_t fileOffset = 0; // absolute offset in file; set by MachO ctor
 
     explicit LoadCommand(uint32_t type, uint32_t cmdSize) : type(type), cmdSize(cmdSize) {};
 };

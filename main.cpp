@@ -18,6 +18,8 @@ int main(int argc, char **argv) {
     app.add_subcommand("generate", "Generate an embedded signature and emit on stdout");
     app.add_subcommand("inject", "Generate and inject embedded signature");
     app.add_subcommand("show-arch", "Show architecture");
+    app.add_subcommand("remove-signature",
+                       "Remove an existing embedded code signature");
 
     app.require_subcommand();
 
@@ -27,6 +29,8 @@ int main(int argc, char **argv) {
         return SigTool::Commands::checkRequiresSignature(file);
     } else if (app.got_subcommand("show-arch")) {
         return SigTool::Commands::showArch(file);
+    } else if (app.got_subcommand("remove-signature")) {
+        return SigTool::Commands::removeSignature(file);
     }
 
     SigTool::Commands::SignOptions options{
