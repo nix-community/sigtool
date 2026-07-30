@@ -1,6 +1,7 @@
 #ifndef SIGTOOL_SIGNATURE_H
 #define SIGTOOL_SIGNATURE_H
 
+#include <cstddef>
 #include <iostream>
 #include <vector>
 #include <memory>
@@ -93,6 +94,20 @@ struct Entitlements : public Blob {
 
     CSSlot slotType() override {
         return CSSLOT_ENTITLEMENTS;
+    }
+
+    void emit(std::ostream &os) override;
+    size_t length() override;
+};
+
+struct EntitlementsDER : public Blob {
+    std::vector<unsigned char> entitlements;
+
+    explicit EntitlementsDER(std::vector<unsigned char> entitlements)
+            : entitlements{std::move(entitlements)} {}
+
+    CSSlot slotType() override {
+        return CSSLOT_ENTITLEMENTS_DER;
     }
 
     void emit(std::ostream &os) override;

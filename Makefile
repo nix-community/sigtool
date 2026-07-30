@@ -3,7 +3,7 @@
 PKG_CONFIG ?= pkg-config
 CXXFLAGS = -std=c++11
 
-COMMON_SRCS = hash.cpp macho.cpp signature.cpp commands.cpp
+COMMON_SRCS = hash.cpp macho.cpp signature.cpp commands.cpp der.cpp
 
 SIGTOOL_SRCS = main.cpp $(COMMON_SRCS)
 SIGTOOL_OBJS := $(SIGTOOL_SRCS:.cpp=.o)
@@ -11,8 +11,8 @@ SIGTOOL_OBJS := $(SIGTOOL_SRCS:.cpp=.o)
 CODESIGN_SRCS = codesign.cpp $(COMMON_SRCS)
 CODESIGN_OBJS := $(CODESIGN_SRCS:.cpp=.o)
 
-CPPFLAGS := -I vendor $(shell $(PKG_CONFIG) --cflags openssl)
-LIBS := $(shell $(PKG_CONFIG) --libs openssl)
+CPPFLAGS := -I vendor $(shell $(PKG_CONFIG) --cflags openssl libplist-2.0)
+LIBS := $(shell $(PKG_CONFIG) --libs openssl libplist-2.0)
 
 sigtool: $(SIGTOOL_OBJS)
 	$(CXX) $(LDFLAGS) -o $@ $^ $(LIBS)

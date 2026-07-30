@@ -12,6 +12,7 @@
 #include "commands.h"
 #include "macho.h"
 #include "signature.h"
+#include "der.h"
 
 extern char **environ;
 
@@ -154,9 +155,16 @@ static SuperBlob signMachO(
 
     // optional blob: entitlements
     if (!options.entitlements.empty()) {
-        auto entitlements = std::make_shared<Entitlements>(readFile(options.entitlements));
+        std::string plistXml = readFile(options.entitlements);
+        auto entitlements = std::make_shared<Entitlements>(plistXml);
         codeDirectory->setSpecialHash(entitlements->slotType(), hashBlob(entitlements));
         sb.blobs.push_back(entitlements);
+
+        if (options.generateEntitlementDER) {
+            auto entitlementsDer = std::make_shared<EntitlementsDER>(encodeEntitlementsDER(plistXml));
+            codeDirectory->setSpecialHash(entitlementsDer->slotType(), hashBlob(entitlementsDer));
+            sb.blobs.push_back(entitlementsDer);
+        }
     }
 
     // blob: empty signature slot
@@ -277,6 +285,7 @@ int Commands::codesign(const CodesignOptions &options, const std::string &filena
                 .filename = filename,
                 .identifier = identifier,
                 .entitlements = options.entitlements,
+                .generateEntitlementDER = options.generateEntitlementDER,
         }, macho);
 
 
@@ -346,6 +355,7 @@ int Commands::codesign(const CodesignOptions &options, const std::string &filena
             .filename = std::string(tempfileName.get()),
             .identifier = identifier,
             .entitlements = options.entitlements,
+            .generateEntitlementDER = options.generateEntitlementDER,
     });
 
     // rename temp file to output

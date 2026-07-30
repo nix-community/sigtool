@@ -6,10 +6,13 @@ int main(int argc, char **argv) {
     app.require_subcommand();
 
     std::string file, identifier, entitlements;
+    bool generateEntitlementDER = false;
     app.add_option("-f,--file", file, "Mach-O target file")
             ->required();
     app.add_option("-i,--identifier", identifier, "File identifier");
     app.add_option("-e,--entitlements", entitlements, "Entitlements plist");
+    app.add_flag("--generate-entitlement-der", generateEntitlementDER,
+                 "Also embed DER-encoded entitlements");
 
     app.add_subcommand("check-requires-signature",
                        "Determine if this is a macho file that must be signed");
@@ -33,6 +36,7 @@ int main(int argc, char **argv) {
             .filename = file,
             .identifier = identifier,
             .entitlements = entitlements,
+            .generateEntitlementDER = generateEntitlementDER,
     };
 
     if (app.got_subcommand("size")) {

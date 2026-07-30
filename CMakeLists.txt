@@ -8,12 +8,14 @@ IF(CMAKE_BUILD_TYPE STREQUAL "Debug")
 ENDIF()
 
 find_package(OpenSSL REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBPLIST REQUIRED IMPORTED_TARGET libplist-2.0)
 
 set(CMAKE_CXX_STANDARD 11)
 
-add_library(libsigtool macho.cpp signature.cpp hash.cpp commands.cpp)
+add_library(libsigtool macho.cpp signature.cpp hash.cpp commands.cpp der.cpp)
 target_include_directories(libsigtool PUBLIC vendor)
-target_link_libraries(libsigtool PRIVATE OpenSSL::Crypto)
+target_link_libraries(libsigtool PRIVATE OpenSSL::Crypto PkgConfig::LIBPLIST)
 set_property(TARGET libsigtool PROPERTY OUTPUT_NAME sigtool)
 
 add_executable(sigtool main.cpp)

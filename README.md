@@ -26,6 +26,7 @@ Options:
   -f,--file TEXT REQUIRED     Mach-O target file
   -i,--identifier TEXT        File identifier
   -e,--entitlements TEXT      Entitlements plist
+  --generate-entitlement-der  Also embed DER-encoded entitlements
 
 Subcommands:
   check-requires-signature    Determine if this is a macho file that must be signed
@@ -50,6 +51,7 @@ Options:
   -i,--identifier TEXT        File identifier
   -f,--force                  Replace any existing signatures
   --entitlements TEXT         Entitlements plist
+  --generate-entitlement-der  Also embed DER-encoded entitlements
 ```
 
 
