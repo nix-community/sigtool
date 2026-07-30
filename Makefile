@@ -20,7 +20,10 @@ sigtool: $(SIGTOOL_OBJS)
 codesign: $(CODESIGN_OBJS)
 	$(CXX) $(LDFLAGS) -o $@ $^
 
-.PHONY: install
+.PHONY: install clean
 install: sigtool codesign
 	mkdir -p $(DESTDIR)$(PREFIX)/bin
 	cp codesign sigtool $(DESTDIR)$(PREFIX)/bin/
+
+clean:
+	rm -f sigtool codesign $(SIGTOOL_OBJS) $(CODESIGN_OBJS)
