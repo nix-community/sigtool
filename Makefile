@@ -12,13 +12,13 @@ CODESIGN_SRCS = codesign.cpp $(COMMON_SRCS)
 CODESIGN_OBJS := $(CODESIGN_SRCS:.cpp=.o)
 
 CPPFLAGS := -I vendor $(shell $(PKG_CONFIG) --cflags openssl)
-LDFLAGS := $(shell $(PKG_CONFIG) --libs openssl)
+LIBS := $(shell $(PKG_CONFIG) --libs openssl)
 
 sigtool: $(SIGTOOL_OBJS)
-	$(CXX) $(LDFLAGS) -o $@ $^
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 codesign: $(CODESIGN_OBJS)
-	$(CXX) $(LDFLAGS) -o $@ $^
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 .PHONY: install clean
 install: sigtool codesign
