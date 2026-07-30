@@ -52,8 +52,13 @@ Options:
   -f,--force                  Replace any existing signatures
   --entitlements TEXT         Entitlements plist
   --generate-entitlement-der  Also embed DER-encoded entitlements
+  --timestamp[=none]          Accepted for compatibility; only =none is supported
 ```
 
+`--timestamp=none` is accepted as a no-op so build tools that pass it can call
+this `codesign` unmodified. Real TSA timestamping is not supported because
+ad-hoc signatures contain no CMS signature for a timestamp authority to
+countersign.
 
 ## Example signature
 
