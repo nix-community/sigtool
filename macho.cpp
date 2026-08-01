@@ -80,6 +80,25 @@ MachO::MachO(std::ifstream &f, off_t offset, size_t size) : header{}, offset{off
                 break;
             }
 
+            case LC_BUILD_VERSION: {
+                auto lcBuildVersion = std::make_shared<BuildVersionLoadCommand>(type, cmdSize);
+                f.read(reinterpret_cast<char *>(&lcBuildVersion->data),
+                       sizeof(BuildVersionLoadCommand::data));
+                loadCommands.push_back(lcBuildVersion);
+                break;
+            }
+
+            case LC_VERSION_MIN_MACOSX:
+            case LC_VERSION_MIN_IPHONEOS:
+            case LC_VERSION_MIN_TVOS:
+            case LC_VERSION_MIN_WATCHOS: {
+                auto lcVersionMin = std::make_shared<VersionMinLoadCommand>(type, cmdSize);
+                f.read(reinterpret_cast<char *>(&lcVersionMin->data),
+                       sizeof(VersionMinLoadCommand::data));
+                loadCommands.push_back(lcVersionMin);
+                break;
+            }
+
             case LC_CODE_SIGNATURE: {
                 auto lcCodeSignature = std::make_shared<CodeSignatureLoadCommand>(type, cmdSize);
                 f.read(reinterpret_cast<char *>(&lcCodeSignature->data),
@@ -129,6 +148,26 @@ std::shared_ptr<CodeSignatureLoadCommand> MachO::getCodeSignatureLoadCommand() {
         return std::static_pointer_cast<CodeSignatureLoadCommand>(lc);
     }
     return std::shared_ptr<CodeSignatureLoadCommand>{};
+}
+
+uint32_t MachO::sdkVersion() {
+    for (const auto &lc : loadCommands) {
+        if (lc->type == LC_BUILD_VERSION) {
+            return std::static_pointer_cast<BuildVersionLoadCommand>(lc)->data.sdk;
+        }
+    }
+
+    for (const auto &lc : loadCommands) {
+        switch (lc->type) {
+            case LC_VERSION_MIN_MACOSX:
+            case LC_VERSION_MIN_IPHONEOS:
+            case LC_VERSION_MIN_TVOS:
+            case LC_VERSION_MIN_WATCHOS:
+                return std::static_pointer_cast<VersionMinLoadCommand>(lc)->data.sdk;
+        }
+    }
+
+    return 0;
 }
 
 bool MachO::requiresSignature() {

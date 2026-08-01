@@ -54,6 +54,11 @@ enum {
 enum LCType {
     LC_CODE_SIGNATURE = 0x1d,
     LC_SEGMENT_64 = 0x19,
+    LC_VERSION_MIN_MACOSX = 0x24,
+    LC_VERSION_MIN_IPHONEOS = 0x25,
+    LC_VERSION_MIN_TVOS = 0x2f,
+    LC_VERSION_MIN_WATCHOS = 0x30,
+    LC_BUILD_VERSION = 0x32,
 };
 
 struct MachOHeader {
@@ -94,6 +99,30 @@ struct Segment64LoadCommand : public LoadCommand {
     } __attribute__((packed)) data{};
 };
 
+// LC_BUILD_VERSION; minos/sdk are X.Y.Z packed in nibbles as xxxx.yy.zz
+struct BuildVersionLoadCommand : public LoadCommand {
+    explicit BuildVersionLoadCommand(uint32_t type, uint32_t cmdSize)
+            : LoadCommand(type, cmdSize) {};
+
+    struct {
+        uint32_t platform;
+        uint32_t minos;
+        uint32_t sdk;
+        uint32_t ntools;
+    } __attribute__((packed)) data{};
+};
+
+// LC_VERSION_MIN_*; version/sdk are X.Y.Z packed in nibbles as xxxx.yy.zz
+struct VersionMinLoadCommand : public LoadCommand {
+    explicit VersionMinLoadCommand(uint32_t type, uint32_t cmdSize)
+            : LoadCommand(type, cmdSize) {};
+
+    struct {
+        uint32_t version;
+        uint32_t sdk;
+    } __attribute__((packed)) data{};
+};
+
 struct CodeSignatureLoadCommand : public LoadCommand {
     explicit CodeSignatureLoadCommand(uint32_t type, uint32_t cmdSize)
             : LoadCommand(type, cmdSize) {};
@@ -115,6 +144,10 @@ struct MachO {
     std::shared_ptr<Segment64LoadCommand> getSegment64LoadCommand(const std::string &name);
 
     std::shared_ptr<CodeSignatureLoadCommand> getCodeSignatureLoadCommand();
+
+    // SDK version this slice was built against, in the packed nibble form
+    // used by LC_BUILD_VERSION / LC_VERSION_MIN_* (xxxx.yy.zz). 0 if unknown.
+    uint32_t sdkVersion();
 
     bool requiresSignature();
 

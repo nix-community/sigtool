@@ -18,8 +18,16 @@ CodeDirectory::CodeDirectory() noexcept {
     data.hashType = Hash::hashType;
 }
 
+// Fixed-header size for a given CodeDirectory version. Variable parts (ident,
+// hashes) follow.
+static size_t headerSizeForVersion(uint32_t version) {
+    if (version >= 0x20500) return sizeof(CodeDirectory::data_t);
+    // Strip the trailing v=0x20500 fields (runtime + preEncryptionOffset, 8 bytes).
+    return sizeof(CodeDirectory::data_t) - 8;
+}
+
 size_t CodeDirectory::length() {
-    size_t length = sizeof(data);
+    size_t length = headerSizeForVersion(data.version);
     length += identifier.length() + 1;
     length += sizeof(Hash::bytes) * (data.nSpecialSlots + data.nCodeSlots);
     return length;
@@ -27,7 +35,7 @@ size_t CodeDirectory::length() {
 
 void CodeDirectory::emit(std::ostream& os)  {
     // Layout variable length components
-    off_t tail = sizeof(data);
+    off_t tail = headerSizeForVersion(data.version);
 
     data.identOffset = tail;
     tail += identifier.length() + 1;
@@ -59,6 +67,10 @@ void CodeDirectory::emit(std::ostream& os)  {
     EmitBE::writeUInt64(os, data.execSegBase);
     EmitBE::writeUInt64(os, data.execSegLimit);
     EmitBE::writeUInt64(os, data.execSegFlags);
+    if (data.version >= 0x20500) {
+        EmitBE::writeUInt32(os, data.runtime);
+        EmitBE::writeUInt32(os, data.preEncryptionOffset);
+    }
 
     // Followed by variable length components
     os.write(identifier.c_str(), identifier.length());
@@ -99,6 +111,12 @@ void CodeDirectory::setCodeLimit(uint64_t codeLimit) {
 void CodeDirectory::addCodeHash(const Hash& value) {
     codeHashes.push_back(value);
     data.nCodeSlots = codeHashes.size();
+}
+
+void CodeDirectory::setHardenedRuntime(uint32_t runtimeVersion) {
+    data.version = std::max(data.version, uint32_t{0x20500});
+    data.flags |= CS_RUNTIME;
+    data.runtime = runtimeVersion;
 }
 
 void SuperBlob::emit(std::ostream& os)  {

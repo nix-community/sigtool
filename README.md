@@ -27,6 +27,7 @@ Options:
   -i,--identifier TEXT        File identifier
   -e,--entitlements TEXT      Entitlements plist
   --generate-entitlement-der  Also embed DER-encoded entitlements
+  --hardened-runtime          Enable hardened runtime (sets CS_RUNTIME flag)
 
 Subcommands:
   check-requires-signature    Determine if this is a macho file that must be signed
@@ -53,12 +54,20 @@ Options:
   --entitlements TEXT         Entitlements plist
   --generate-entitlement-der  Also embed DER-encoded entitlements
   --timestamp[=none]          Accepted for compatibility; only =none is supported
+  -o,--options TEXT           Comma-separated signing options (only "runtime" supported)
 ```
 
 `--timestamp=none` is accepted as a no-op so build tools that pass it can call
 this `codesign` unmodified. Real TSA timestamping is not supported because
 ad-hoc signatures contain no CMS signature for a timestamp authority to
 countersign.
+
+### Hardened runtime
+
+`-o runtime` (or `--options=runtime`) enables the hardened runtime: bumps the
+CodeDirectory to v=0x20500, sets the `CS_RUNTIME` flag, and emits the runtime
+field. Other `-o` options (`library`, `kill`, etc.) are not supported and will
+error.
 
 ## Example signature
 
