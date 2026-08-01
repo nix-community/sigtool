@@ -10,6 +10,7 @@ namespace Commands {
         std::string identifier;
         std::string entitlements;
         bool generateEntitlementDER;
+        bool hardenedRuntime;
     };
 
     struct CodesignOptions {
@@ -17,6 +18,7 @@ namespace Commands {
         std::string entitlements;
         bool force;
         bool generateEntitlementDER;
+        bool hardenedRuntime;
     };
 
     int checkRequiresSignature(const std::string &file);

@@ -98,6 +98,10 @@ static SuperBlob signMachO(
         codeDirectory->data.execSegFlags |= CS_EXECSEG_MAIN_BINARY;
     }
 
+    if (options.hardenedRuntime) {
+        codeDirectory->setHardenedRuntime(target->sdkVersion());
+    }
+
     auto textSegment = target->getSegment64LoadCommand("__TEXT");
     if (textSegment) {
         codeDirectory->data.execSegBase = textSegment->data.fileoff;
@@ -286,6 +290,7 @@ int Commands::codesign(const CodesignOptions &options, const std::string &filena
                 .identifier = identifier,
                 .entitlements = options.entitlements,
                 .generateEntitlementDER = options.generateEntitlementDER,
+                .hardenedRuntime = options.hardenedRuntime,
         }, macho);
 
 
@@ -356,6 +361,7 @@ int Commands::codesign(const CodesignOptions &options, const std::string &filena
             .identifier = identifier,
             .entitlements = options.entitlements,
             .generateEntitlementDER = options.generateEntitlementDER,
+            .hardenedRuntime = options.hardenedRuntime,
     });
 
     // rename temp file to output

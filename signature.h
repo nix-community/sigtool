@@ -54,6 +54,9 @@ struct CodeDirectory : public Blob {
         uint64_t execSegBase;
         uint64_t execSegLimit;
         uint64_t execSegFlags;
+        // v=0x20500 fields (emitted only when version >= 0x20500)
+        uint32_t runtime;
+        uint32_t preEncryptionOffset;
     } __attribute__((packed)) data {};
 
 
@@ -69,6 +72,9 @@ struct CodeDirectory : public Blob {
     void setPageSize(uint16_t pageSize);
     void setCodeLimit(uint64_t codeLimit);
     void addCodeHash(const Hash& value);
+    // Enable hardened runtime: sets CS_RUNTIME flag, bumps version to 0x20500,
+    // and writes the runtime field (SDK version, packed nibble form).
+    void setHardenedRuntime(uint32_t runtimeVersion);
 
     std::string identifier;
     std::vector<Hash> codeHashes;

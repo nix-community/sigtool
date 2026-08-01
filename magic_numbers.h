@@ -5,6 +5,7 @@ namespace SigTool {
 
 enum {
     CS_ADHOC = 0x00000002,
+    CS_RUNTIME = 0x00010000,
 };
 
 enum {
