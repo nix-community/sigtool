@@ -4,7 +4,7 @@
 int main(int argc, char **argv) {
     CLI::App app{"codesign"};
 
-    std::string identity, identifier, entitlements, timestamp;
+    std::string identity, identifier, entitlements, timestamp, optionsFlags;
     bool force = false;
     bool generateEntitlementDER = false;
     std::vector<std::string> files;
@@ -23,6 +23,8 @@ int main(int argc, char **argv) {
     // "true", which is rejected below like any value other than "none".
     app.add_flag("--timestamp", timestamp,
                  "Timestamp options; only '--timestamp=none' is supported");
+    app.add_option("-o,--options", optionsFlags,
+                   "Comma-separated signing options; only 'runtime' is supported");
     app.add_option("files", files, "Files to sign");
 
     CLI11_PARSE(app, argc, argv);
@@ -38,11 +40,31 @@ int main(int argc, char **argv) {
                 std::string{"Only ad-hoc identities supported, requested: '"} + identity + "'"};
     }
 
+    bool hardenedRuntime = false;
+    if (!optionsFlags.empty()) {
+        size_t start = 0;
+        while (start <= optionsFlags.size()) {
+            size_t comma = optionsFlags.find(',', start);
+            if (comma == std::string::npos) comma = optionsFlags.size();
+            std::string opt = optionsFlags.substr(start, comma - start);
+            if (opt == "runtime") {
+                hardenedRuntime = true;
+            } else if (!opt.empty()) {
+                throw std::runtime_error{
+                        "-o option '" + opt + "' is not supported "
+                        "(only 'runtime' is recognised)"};
+            }
+            if (comma == optionsFlags.size()) break;
+            start = comma + 1;
+        }
+    }
+
     SigTool::Commands::CodesignOptions options{
             .identifier = identifier,
             .entitlements = entitlements,
             .force = force,
             .generateEntitlementDER = generateEntitlementDER,
+            .hardenedRuntime = hardenedRuntime,
     };
 
     for (const auto &f : files) {
