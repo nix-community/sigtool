@@ -11,6 +11,10 @@ namespace Commands {
         std::string entitlements;
         bool generateEntitlementDER;
         bool hardenedRuntime;
+        // For bundle signing: paths whose hashes seed CodeDirectory special
+        // slots 1 (Info.plist) and 3 (CodeResources). Empty = unused.
+        std::string infoPlistPath;
+        std::string codeResourcesPath;
     };
 
     struct CodesignOptions {

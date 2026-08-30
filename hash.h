@@ -19,6 +19,18 @@ struct SHA256Hash {
     SHA256Hash(): bytes{} {};
 };
 
+struct SHA1Hash {
+    static const int constexpr hashSize = 20;
+    char bytes[hashSize]{};
+
+    SHA1Hash(const char *data, size_t len);
+    explicit SHA1Hash(const std::string &str);
+
+    SHA1Hash(): bytes{} {};
+};
+
+std::string base64Encode(const char *data, size_t len);
+
 using Hash = SHA256Hash;
 };
 

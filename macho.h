@@ -163,9 +163,14 @@ struct MachOList {
 };
 
 struct NotAMachOFileException : public std::exception {
-    uint32_t magic;
+    std::string message;
 
-    explicit NotAMachOFileException(uint32_t magic) : magic{magic} {}
+    explicit NotAMachOFileException(std::string message)
+            : message{std::move(message)} {}
+
+    const char *what() const noexcept override {
+        return message.c_str();
+    }
 };
 };
 

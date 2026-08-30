@@ -9,8 +9,10 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
+#include "bundle.h"
 #include "commands.h"
 #include "macho.h"
+#include "resources.h"
 #include "signature.h"
 #include "der.h"
 
@@ -157,6 +159,18 @@ static SuperBlob signMachO(
     codeDirectory->setSpecialHash(requirements->slotType(), hashBlob(requirements));
     sb.blobs.push_back(requirements);
 
+    // bundle special hashes: slot 1 = Info.plist, slot 3 = CodeResources
+    if (!options.infoPlistPath.empty()) {
+        std::string infoData = readFile(options.infoPlistPath);
+        Hash infoHash{infoData.data(), infoData.size()};
+        codeDirectory->setSpecialHash(1 /* CSSLOT_INFOSLOT */, infoHash);
+    }
+    if (!options.codeResourcesPath.empty()) {
+        std::string crData = readFile(options.codeResourcesPath);
+        Hash crHash{crData.data(), crData.size()};
+        codeDirectory->setSpecialHash(3 /* CSSLOT_RESOURCEDIR */, crHash);
+    }
+
     // optional blob: entitlements
     if (!options.entitlements.empty()) {
         std::string plistXml = readFile(options.entitlements);
@@ -266,33 +280,34 @@ static std::string inferIdentifier(const std::string& filename) {
     return basename;
 }
 
-int Commands::codesign(const CodesignOptions &options, const std::string &filename) {
-    std::string identifier = options.identifier;
-    if (identifier.empty()) {
-        identifier = inferIdentifier(filename);
-    }
-    // Parse and discovery arguments
-    MachOList list{filename};
+// Sign a single Mach-O file in place (handles allocation via codesign_allocate
+// and injection of the new signature).
+static void signOneMachO(const Commands::CodesignOptions &options,
+                         const std::string &binaryFile,
+                         const std::string &identifier,
+                         const std::string &infoPlistPath,
+                         const std::string &codeResourcesPath) {
+    MachOList list{binaryFile};
     std::vector<std::string> arguments;
 
     arguments.emplace_back("codesign_allocate");
     arguments.emplace_back("-i");
-    arguments.emplace_back(filename);
-
+    arguments.emplace_back(binaryFile);
 
     for (const auto &macho : list.machos) {
         auto codeSignature = macho->getCodeSignatureLoadCommand();
         if (!options.force && codeSignature) {
             throw std::runtime_error{"file is already signed. pass -f to sign regardless."};
         }
-        auto sb = signMachO(SignOptions{
-                .filename = filename,
+        auto sb = signMachO(Commands::SignOptions{
+                .filename = binaryFile,
                 .identifier = identifier,
                 .entitlements = options.entitlements,
                 .generateEntitlementDER = options.generateEntitlementDER,
                 .hardenedRuntime = options.hardenedRuntime,
+                .infoPlistPath = infoPlistPath,
+                .codeResourcesPath = codeResourcesPath,
         }, macho);
-
 
         arguments.emplace_back("-A");
         arguments.emplace_back(std::to_string(macho->header.cpuType));
@@ -303,16 +318,14 @@ int Commands::codesign(const CodesignOptions &options, const std::string &filena
         arguments.push_back(std::to_string(len));
     }
 
-    // Make temporary name
-    std::unique_ptr<char, decltype(&std::free)> tempfileName { strdup((filename + "XXXXXX").c_str()), std::free };
+    std::unique_ptr<char, decltype(&std::free)> tempfileName{
+            strdup((binaryFile + "XXXXXX").c_str()), std::free};
     int tempfile = mkstemp(tempfileName.get());
 
-    // Preserve mode
     struct stat sourceFileStat{};
-    if (stat(filename.c_str(), &sourceFileStat) != 0) {
-        throw std::runtime_error{std::string{"stat of "} + filename + " failed: " + strerror(errno)};
+    if (stat(binaryFile.c_str(), &sourceFileStat) != 0) {
+        throw std::runtime_error{std::string{"stat of "} + binaryFile + " failed: " + strerror(errno)};
     }
-
     if (fchmod(tempfile, sourceFileStat.st_mode) != 0) {
         throw std::runtime_error{"chmod temporary file"};
     }
@@ -320,10 +333,8 @@ int Commands::codesign(const CodesignOptions &options, const std::string &filena
     arguments.emplace_back("-o");
     arguments.emplace_back(std::string(tempfileName.get()));
 
-    // codesign_allocate
     pid_t pid;
     char **spawnArgs = toSpawnArgs(arguments);
-
     const char *codesign_allocate = getenv("CODESIGN_ALLOCATE");
     if (!codesign_allocate) {
         codesign_allocate = "codesign_allocate";
@@ -332,7 +343,7 @@ int Commands::codesign(const CodesignOptions &options, const std::string &filena
     int spawn_result;
     if ((spawn_result = posix_spawnp(&pid, codesign_allocate, nullptr, nullptr, spawnArgs, environ)) != 0) {
         throw std::runtime_error{std::string{"Failed to spawn codesign_allocate: "} + strerror(spawn_result)};
-    };
+    }
 
     int codesign_status;
     pid_t waitpid_result;
@@ -355,20 +366,57 @@ int Commands::codesign(const CodesignOptions &options, const std::string &filena
         throw std::runtime_error{std::string{"close: "} + strerror(tempfile)};
     }
 
-    // inject
-    Commands::inject(SignOptions{
+    Commands::inject(Commands::SignOptions{
             .filename = std::string(tempfileName.get()),
             .identifier = identifier,
             .entitlements = options.entitlements,
             .generateEntitlementDER = options.generateEntitlementDER,
             .hardenedRuntime = options.hardenedRuntime,
+            .infoPlistPath = infoPlistPath,
+            .codeResourcesPath = codeResourcesPath,
     });
 
-    // rename temp file to output
-    if (rename(tempfileName.get(), filename.c_str()) != 0) {
+    if (rename(tempfileName.get(), binaryFile.c_str()) != 0) {
         throw std::runtime_error{"rename failed"};
     }
+}
 
+static void writeFileBytes(const std::string &path, const std::string &bytes) {
+    std::ofstream out(path, std::ofstream::binary | std::ofstream::trunc);
+    if (!out.is_open()) {
+        throw std::runtime_error{"opening '" + path + "' for write failed"};
+    }
+    out.write(bytes.data(), bytes.size());
+    if (!out) {
+        throw std::runtime_error{"writing to '" + path + "' failed"};
+    }
+}
+
+int Commands::codesign(const CodesignOptions &options, const std::string &filename) {
+    Bundle bundle = detectBundle(filename);
+
+    std::string identifier = options.identifier;
+    if (identifier.empty()) identifier = bundle.identifier;
+    if (identifier.empty()) identifier = inferIdentifier(bundle.binaryPath);
+
+    if (bundle.type == Bundle::Type::Single) {
+        signOneMachO(options, bundle.binaryPath, identifier, "", "");
+        return 0;
+    }
+
+    // Bundle: generate CodeResources, write to disk, then sign the binary
+    // with slot 1 (Info.plist) and slot 3 (CodeResources) populated.
+    std::string codeResources = generateCodeResources(bundle);
+    std::string sigDir = bundle.contentsRoot + "/_CodeSignature";
+    if (mkdir(sigDir.c_str(), 0755) != 0 && errno != EEXIST) {
+        throw std::runtime_error{
+                std::string{"mkdir '" + sigDir + "': "} + strerror(errno)};
+    }
+    std::string crPath = sigDir + "/CodeResources";
+    writeFileBytes(crPath, codeResources);
+
+    signOneMachO(options, bundle.binaryPath, identifier,
+                 bundle.infoPlistPath, crPath);
     return 0;
 }
 };
