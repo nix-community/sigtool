@@ -3,12 +3,13 @@
 pkgs.mkShell {
   nativeBuildInputs = [
     pkgs.cmake
-    pkgs.pkgconfig
+    pkgs.pkg-config
   ];
 
   buildInputs = [
     (pkgs.python3.withPackages (ps: [ ps.construct ]))
     pkgs.openssl
+    pkgs.libplist
 
     # keep this line if you use bash
     pkgs.bashInteractive
