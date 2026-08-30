@@ -13,7 +13,7 @@ pkg_check_modules(LIBPLIST REQUIRED IMPORTED_TARGET libplist-2.0)
 
 set(CMAKE_CXX_STANDARD 11)
 
-add_library(libsigtool macho.cpp signature.cpp hash.cpp commands.cpp der.cpp)
+add_library(libsigtool macho.cpp signature.cpp hash.cpp commands.cpp der.cpp bundle.cpp resources.cpp)
 target_include_directories(libsigtool PUBLIC vendor)
 target_link_libraries(libsigtool PRIVATE OpenSSL::Crypto PkgConfig::LIBPLIST)
 set_property(TARGET libsigtool PROPERTY OUTPUT_NAME sigtool)
@@ -28,10 +28,12 @@ install(TARGETS sigtool codesign libsigtool)
 
 install(
   FILES
+    bundle.h
     commands.h
     emit.h
     hash.h
     macho.h
+    resources.h
     signature.h
   DESTINATION
     include/sigtool

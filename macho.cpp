@@ -1,4 +1,5 @@
 #include <cstring>
+#include <sstream>
 #include <sys/stat.h>
 #include "macho.h"
 
@@ -10,7 +11,64 @@ constexpr const uint32_t MH_CIGAM_64 = 0xCFFAEDFE;
 constexpr const uint32_t MH_FAT_MAGIC = 0xCAFEBABE;
 constexpr const uint32_t MH_FAT_CIGAM = 0xBEBAFECA;
 
+// If `path` looks like a bundle directory (e.g. Foo.framework/Versions/A or
+// Foo.app), return the conventional path of the main Mach-O binary inside.
+// Returns an empty string if no convention applies.
+static std::string suggestBundleBinary(const std::string &path) {
+    std::string p = path;
+    while (p.size() > 1 && p.back() == '/') p.pop_back();
+
+    auto basename = [](const std::string &s) {
+        auto slash = s.find_last_of('/');
+        return slash == std::string::npos ? s : s.substr(slash + 1);
+    };
+    auto endsWith = [](const std::string &s, const std::string &suffix) {
+        return s.size() >= suffix.size()
+               && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+    };
+
+    // Foo.framework/Versions/<V>
+    auto slash = p.find_last_of('/');
+    if (slash != std::string::npos) {
+        std::string parent = p.substr(0, slash);
+        auto slash2 = parent.find_last_of('/');
+        std::string grandparent = slash2 == std::string::npos
+                                  ? std::string{}
+                                  : parent.substr(0, slash2);
+        std::string parentBase = slash2 == std::string::npos
+                                 ? parent
+                                 : parent.substr(slash2 + 1);
+        if (parentBase == "Versions" && endsWith(grandparent, ".framework")) {
+            std::string name = basename(grandparent);
+            name = name.substr(0, name.size() - sizeof(".framework") + 1);
+            return p + "/" + name;
+        }
+    }
+
+    // Foo.app
+    if (endsWith(p, ".app")) {
+        std::string name = basename(p);
+        name = name.substr(0, name.size() - sizeof(".app") + 1);
+        return p + "/Contents/MacOS/" + name;
+    }
+
+    return {};
+}
+
 MachOList::MachOList(const std::string &filename) {
+    struct stat st{};
+    if (stat(filename.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+        std::ostringstream msg;
+        msg << "input is a directory: '" << filename
+            << "'. Bundle signing (resource manifest generation) is not "
+               "supported; pass the path to the Mach-O binary inside";
+        std::string suggestion = suggestBundleBinary(filename);
+        if (!suggestion.empty()) {
+            msg << ", e.g. '" << suggestion << "'";
+        }
+        throw NotAMachOFileException{msg.str()};
+    }
+
     std::ifstream f;
     f.open(filename, std::ifstream::in | std::ifstream::binary);
     if (f.fail()) {
@@ -20,7 +78,10 @@ MachOList::MachOList(const std::string &filename) {
     auto magic = Read::readBytes<uint32_t>(f);
 
     if (magic != MH_MAGIC_64 && magic != MH_CIGAM_64 && magic != MH_FAT_MAGIC && magic != MH_FAT_CIGAM) {
-        throw NotAMachOFileException{magic};
+        std::ostringstream msg;
+        msg << "not a Mach-O file: '" << filename << "' (unrecognized magic 0x"
+            << std::hex << magic << ")";
+        throw NotAMachOFileException{msg.str()};
     }
 
     if (magic == MH_FAT_CIGAM) {
@@ -60,7 +121,10 @@ MachO::MachO(std::ifstream &f, off_t offset, size_t size) : header{}, offset{off
     auto magic = Read::readBytes<uint32_t>(f);
 
     if (magic != MH_MAGIC_64 && magic != MH_CIGAM_64) {
-        throw NotAMachOFileException{magic};
+        std::ostringstream msg;
+        msg << "not a 64-bit Mach-O slice (unrecognized magic 0x"
+            << std::hex << magic << ")";
+        throw NotAMachOFileException{msg.str()};
     }
 
     f.read(reinterpret_cast<char *>(&header), sizeof(header));

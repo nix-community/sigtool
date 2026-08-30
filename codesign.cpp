@@ -1,7 +1,20 @@
 #include "commands.h"
 #include <CLI11.hpp>
+#include <cstring>
+#include <iostream>
+
+static int run(int argc, char **argv);
 
 int main(int argc, char **argv) {
+    try {
+        return run(argc, argv);
+    } catch (const std::exception &e) {
+        std::cerr << "codesign: error: " << e.what() << std::endl;
+        return 1;
+    }
+}
+
+static int run(int argc, char **argv) {
     CLI::App app{"codesign"};
 
     std::string identity, identifier, entitlements, timestamp, optionsFlags;
