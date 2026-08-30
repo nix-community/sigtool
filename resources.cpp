@@ -7,6 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "hash.h"
 
@@ -40,11 +41,31 @@ bool isNestedBundleDirEntry(const std::string& relDir) {
 }
 
 // Walk `dir` recursively, emitting every regular file's path RELATIVE to
-// `walkRoot`. Skips symlinks, directories, _CodeSignature/, and the immediate
-// children of nested-bundle directories (those are signed separately and
-// recorded as cdhash entries).
+// `walkRoot` into `out`, and every symlink (path + readlink target) into
+// `links`. Skips directories, _CodeSignature/, and the immediate children of
+// nested-bundle directories (those are signed separately and recorded as
+// cdhash entries).
+struct SymlinkEntry {
+    std::string relativePath;
+    std::string target;
+};
+
+std::string readLinkTarget(const std::string& path) {
+    std::vector<char> buf(1024);
+    while (true) {
+        ssize_t n = ::readlink(path.c_str(), buf.data(), buf.size());
+        if (n < 0) {
+            throw std::runtime_error{"readlink '" + path + "': " + strerror(errno)};
+        }
+        if (static_cast<size_t>(n) < buf.size()) {
+            return std::string{buf.data(), static_cast<size_t>(n)};
+        }
+        buf.resize(buf.size() * 2);
+    }
+}
+
 void walk(const std::string& walkRoot, const std::string& subdir,
-          std::vector<std::string>& out) {
+          std::vector<std::string>& out, std::vector<SymlinkEntry>& links) {
     std::string fullDir = subdir.empty() ? walkRoot : (walkRoot + "/" + subdir);
     DIR* d = opendir(fullDir.c_str());
     if (!d) return;
@@ -62,14 +83,17 @@ void walk(const std::string& walkRoot, const std::string& subdir,
         std::string full = walkRoot + "/" + rel;
         struct stat st{};
         if (lstat(full.c_str(), &st) != 0) continue;
-        if (S_ISLNK(st.st_mode)) continue;
+        if (S_ISLNK(st.st_mode)) {
+            links.push_back(SymlinkEntry{rel, readLinkTarget(full)});
+            continue;
+        }
         if (S_ISDIR(st.st_mode)) {
             if (rel == "_CodeSignature") continue;
             // Nested-bundle dirs are skipped here; their immediate children
             // are returned by findNestedBundles() and emitted as cdhash
             // entries instead of file hashes.
             if (subdir.empty() && isNestedBundleDirEntry(rel)) continue;
-            walk(walkRoot, rel, out);
+            walk(walkRoot, rel, out, links);
             continue;
         }
         if (S_ISREG(st.st_mode)) {
@@ -101,8 +125,10 @@ bool isOmitted(const std::string& rel, const std::string& binaryRel,
         if (rel == "PkgInfo") return true;
     }
     // locversion.plist inside .lproj is omitted by Apple
-    if (rel.size() > 18
-        && rel.compare(rel.size() - 18, 18, "/locversion.plist") == 0) {
+    static const std::string locversion = "/locversion.plist";
+    if (rel.size() > locversion.size()
+        && rel.compare(rel.size() - locversion.size(), locversion.size(),
+                       locversion) == 0) {
         // confirm a .lproj segment precedes it
         if (rel.find(".lproj/") != std::string::npos) return true;
     }
@@ -295,7 +321,8 @@ std::string generateCodeResources(const Bundle& bundle,
     bool omitRootInfoPlist = (bundle.type == Bundle::Type::App);
 
     std::vector<std::string> files;
-    walk(bundle.contentsRoot, "", files);
+    std::vector<SymlinkEntry> links;
+    walk(bundle.contentsRoot, "", files, links);
 
     // Filter and sort.
     std::vector<std::string> kept;
@@ -305,6 +332,17 @@ std::string generateCodeResources(const Bundle& bundle,
         kept.push_back(rel);
     }
     std::sort(kept.begin(), kept.end());
+
+    // Symlinks are sealed only in files2 (Apple omits them from `files`).
+    std::vector<SymlinkEntry> linksSorted;
+    for (const auto& l : links) {
+        if (isOmitted(l.relativePath, binaryRel, omitRootInfoPlist)) continue;
+        linksSorted.push_back(l);
+    }
+    std::sort(linksSorted.begin(), linksSorted.end(),
+              [](const SymlinkEntry& a, const SymlinkEntry& b) {
+                  return a.relativePath < b.relativePath;
+              });
 
     // Sort nested entries by relativePath for stable output.
     std::vector<NestedCdHash> nestedSorted = nested;
@@ -336,14 +374,28 @@ std::string generateCodeResources(const Bundle& bundle,
     // SHA-256 dict — regular files (hash2) plus nested bundles (cdhash).
     // Apple sorts entries lexicographically by key; we interleave by merge.
     out += "\t<key>files2</key>\n\t<dict>\n";
-    size_t ki = 0, ni = 0;
-    while (ki < kept.size() || ni < nestedSorted.size()) {
-        bool takeNested;
-        if (ki >= kept.size()) takeNested = true;
-        else if (ni >= nestedSorted.size()) takeNested = false;
-        else takeNested = (nestedSorted[ni].relativePath < kept[ki]);
+    size_t ki = 0, ni = 0, li = 0;
+    while (ki < kept.size() || ni < nestedSorted.size() || li < linksSorted.size()) {
+        // Pick whichever of the three sorted streams has the smallest key.
+        enum { Regular, Nested, Symlink } take = Regular;
+        const std::string* best = ki < kept.size() ? &kept[ki] : nullptr;
+        if (ni < nestedSorted.size()
+            && (!best || nestedSorted[ni].relativePath < *best)) {
+            best = &nestedSorted[ni].relativePath; take = Nested;
+        }
+        if (li < linksSorted.size()
+            && (!best || linksSorted[li].relativePath < *best)) {
+            take = Symlink;
+        }
 
-        if (takeNested) {
+        if (take == Symlink) {
+            const auto& l = linksSorted[li++];
+            out += "\t\t<key>";
+            appendXmlEscaped(out, l.relativePath);
+            out += "</key>\n\t\t<dict>\n\t\t\t<key>symlink</key>\n\t\t\t<string>";
+            appendXmlEscaped(out, l.target);
+            out += "</string>\n\t\t</dict>\n";
+        } else if (take == Nested) {
             const auto& n = nestedSorted[ni++];
             if (n.cdhashes.empty()) {
                 throw std::runtime_error{

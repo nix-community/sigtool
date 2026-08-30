@@ -538,7 +538,9 @@ int Commands::codesign(const CodesignOptions &options, const std::string &filena
     signTemplate.entitlements = options.entitlements;
     signTemplate.generateEntitlementDER = options.generateEntitlementDER;
     signTemplate.hardenedRuntime = options.hardenedRuntime;
-    if (options.preserveEntitlements) {
+    // An explicit --entitlements always wins over preserved ones (Apple
+    // semantics: preserve unless overridden on the command line).
+    if (options.preserveEntitlements && options.entitlements.empty()) {
         signTemplate.entitlementsData = preserved.entitlementsXml;
     }
     if (options.preserveFlags && (preserved.flags & CS_RUNTIME)) {
