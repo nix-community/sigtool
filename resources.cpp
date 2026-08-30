@@ -255,15 +255,21 @@ std::vector<std::string> findNestedBundles(const Bundle& bundle) {
             struct stat st{};
             if (lstat(full.c_str(), &st) != 0) continue;
             if (S_ISLNK(st.st_mode)) continue;
-            if (!S_ISDIR(st.st_mode)) continue;
-            if (!looksLikeBundleSuffix(n)) {
-                throw std::runtime_error{
-                        "non-bundle entry '" + std::string{root} + "/" + n
-                        + "' under " + bundle.contentsRoot
-                        + " is not supported (expected *.framework, *.app, "
-                          "*.xpc, or *.bundle)"};
+            // Bundle directories (recursively signed) and regular files
+            // (signed as a single Mach-O) are both treated as nested entries
+            // — they'll appear in CodeResources as cdhash entries.
+            if (S_ISDIR(st.st_mode)) {
+                if (!looksLikeBundleSuffix(n)) {
+                    throw std::runtime_error{
+                            "non-bundle directory '" + std::string{root} + "/"
+                            + n + "' under " + bundle.contentsRoot
+                            + " is not supported (expected *.framework, "
+                              "*.app, *.xpc, or *.bundle)"};
+                }
+                out.push_back(std::string{root} + "/" + n);
+            } else if (S_ISREG(st.st_mode)) {
+                out.push_back(std::string{root} + "/" + n);
             }
-            out.push_back(std::string{root} + "/" + n);
         }
     }
     return out;
