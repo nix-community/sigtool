@@ -265,6 +265,61 @@ static void freeArgs(char **spawnArgs, std::vector<std::string>::size_type size)
     free(spawnArgs);
 }
 
+// Compute the cdhash of every signed Mach-O slice in `filename` — the first
+// 20 bytes of SHA-256 over each slice's CodeDirectory blob. Throws if the
+// binary has no signature.
+static std::vector<std::vector<uint8_t>> computeCDHashes(const std::string& filename);
+
+static uint32_t readBE32(const char *p) {
+    auto u = reinterpret_cast<const unsigned char *>(p);
+    return (uint32_t(u[0]) << 24) | (uint32_t(u[1]) << 16)
+           | (uint32_t(u[2]) << 8) | uint32_t(u[3]);
+}
+
+static std::vector<std::vector<uint8_t>> computeCDHashes(const std::string& filename) {
+    std::vector<std::vector<uint8_t>> out;
+    MachOList list{filename};
+    for (const auto &macho : list.machos) {
+        auto cs = macho->getCodeSignatureLoadCommand();
+        if (!cs) continue;
+
+        std::ifstream in(filename, std::ifstream::binary);
+        if (!in.is_open()) continue;
+        in.seekg(macho->offset + cs->data.dataOff);
+        std::vector<char> buf(cs->data.dataSize);
+        in.read(buf.data(), buf.size());
+        if (static_cast<size_t>(in.gcount()) != buf.size()) continue;
+
+        if (buf.size() < 12) continue;
+        if (readBE32(buf.data()) != CSMAGIC_EMBEDDED_SIGNATURE) continue;
+        uint32_t count = readBE32(buf.data() + 8);
+        for (uint32_t i = 0; i < count; i++) {
+            size_t indexEntry = 12 + size_t{i} * 8;
+            if (indexEntry + 8 > buf.size()) break;
+            uint32_t blobOff = readBE32(buf.data() + indexEntry + 4);
+            if (blobOff + 8 > buf.size()) continue;
+            uint32_t blobMagic = readBE32(buf.data() + blobOff);
+            uint32_t blobLen = readBE32(buf.data() + blobOff + 4);
+            if (blobOff + blobLen > buf.size()) continue;
+            if (blobMagic == CSMAGIC_CODEDIRECTORY) {
+                SHA256Hash h{buf.data() + blobOff, blobLen};
+                std::vector<uint8_t> cdhash(20);
+                for (int b = 0; b < 20; b++) {
+                    cdhash[b] = static_cast<uint8_t>(h.bytes[b]);
+                }
+                out.push_back(std::move(cdhash));
+                break; // Each slice has one CodeDirectory.
+            }
+        }
+    }
+    if (out.empty()) {
+        throw std::runtime_error{
+                "computeCDHashes: no signed CodeDirectory found in '"
+                + filename + "'"};
+    }
+    return out;
+}
+
 static std::string inferIdentifier(const std::string& filename) {
     // basename / basename_r are awkward to use. We don't need the exact
     // meaning of basename.
@@ -404,9 +459,27 @@ int Commands::codesign(const CodesignOptions &options, const std::string &filena
         return 0;
     }
 
-    // Bundle: generate CodeResources, write to disk, then sign the binary
+    // Bundle: sign nested bundles deepest-first so we can capture their
+    // cdhashes for the outer CodeResources, then sign this bundle's binary
     // with slot 1 (Info.plist) and slot 3 (CodeResources) populated.
-    std::string codeResources = generateCodeResources(bundle);
+    std::vector<NestedCdHash> nestedHashes;
+    auto nestedRels = findNestedBundles(bundle);
+    for (const auto& rel : nestedRels) {
+        std::string nestedPath = bundle.contentsRoot + "/" + rel;
+        // Recurse with force=true (we're orchestrating a fresh sign of the
+        // whole bundle) and identifier cleared so the nested bundle uses its
+        // own CFBundleIdentifier rather than inheriting the outer's.
+        CodesignOptions nestedOpts = options;
+        nestedOpts.identifier.clear();
+        nestedOpts.force = true;
+        Commands::codesign(nestedOpts, nestedPath);
+
+        Bundle nestedBundle = detectBundle(nestedPath);
+        nestedHashes.push_back(
+                NestedCdHash{rel, computeCDHashes(nestedBundle.binaryPath)});
+    }
+
+    std::string codeResources = generateCodeResources(bundle, nestedHashes);
     std::string sigDir = bundle.contentsRoot + "/_CodeSignature";
     if (mkdir(sigDir.c_str(), 0755) != 0 && errno != EEXIST) {
         throw std::runtime_error{

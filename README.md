@@ -82,9 +82,16 @@ directory (or a `Foo.framework/Versions/X` subpath). For bundles it:
   - hashes `CodeResources` into CodeDirectory special slot 3
   - signs the inner Mach-O binary in place
 
-Limitations: nested bundles (`Frameworks/`, `PlugIns/`, `XPCServices/`, ...)
-inside another bundle are not signed recursively. Sign the inner bundles
-first, then sign the outer bundle.
+Nested bundles directly under `Frameworks/`, `SharedFrameworks/`, `PlugIns/`,
+`Plug-ins/`, `XPCServices/`, or `Helpers/` are signed recursively (deepest
+first), and recorded in the outer `CodeResources` as `cdhash` entries with a
+`requirement` covering every Mach-O slice. Signing options (`-o runtime`,
+`--entitlements`, `--generate-entitlement-der`, `--preserve-metadata`) are
+propagated to nested signs; the nested bundle's own `CFBundleIdentifier` is
+used rather than inheriting from the outer.
+
+Non-bundle entries directly under those nested-bundle directories are not
+supported and will error.
 
 ## Example signature
 
