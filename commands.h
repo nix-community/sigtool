@@ -15,6 +15,12 @@ namespace Commands {
         // slots 1 (Info.plist) and 3 (CodeResources). Empty = unused.
         std::string infoPlistPath;
         std::string codeResourcesPath;
+        // Raw entitlements XML; takes precedence over `entitlements` (path)
+        // when non-empty. Used for --preserve-metadata=entitlements.
+        std::string entitlementsData;
+        // Runtime version emitted when hardenedRuntime is set. 0 = derive
+        // from the target's LC_BUILD_VERSION / LC_VERSION_MIN sdk field.
+        uint32_t runtimeVersion;
     };
 
     struct CodesignOptions {
@@ -23,6 +29,11 @@ namespace Commands {
         bool force;
         bool generateEntitlementDER;
         bool hardenedRuntime;
+        // --preserve-metadata categories. When set, fields not explicitly
+        // overridden on the CLI are taken from the existing signature.
+        bool preserveIdentifier;
+        bool preserveEntitlements;
+        bool preserveFlags;
     };
 
     int checkRequiresSignature(const std::string &file);

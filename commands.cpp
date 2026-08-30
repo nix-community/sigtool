@@ -101,7 +101,8 @@ static SuperBlob signMachO(
     }
 
     if (options.hardenedRuntime) {
-        codeDirectory->setHardenedRuntime(target->sdkVersion());
+        codeDirectory->setHardenedRuntime(
+                options.runtimeVersion ? options.runtimeVersion : target->sdkVersion());
     }
 
     auto textSegment = target->getSegment64LoadCommand("__TEXT");
@@ -171,9 +172,14 @@ static SuperBlob signMachO(
         codeDirectory->setSpecialHash(3 /* CSSLOT_RESOURCEDIR */, crHash);
     }
 
-    // optional blob: entitlements
-    if (!options.entitlements.empty()) {
-        std::string plistXml = readFile(options.entitlements);
+    // optional blob: entitlements (raw data takes precedence over file path)
+    std::string plistXml;
+    if (!options.entitlementsData.empty()) {
+        plistXml = options.entitlementsData;
+    } else if (!options.entitlements.empty()) {
+        plistXml = readFile(options.entitlements);
+    }
+    if (!plistXml.empty()) {
         auto entitlements = std::make_shared<Entitlements>(plistXml);
         codeDirectory->setSpecialHash(entitlements->slotType(), hashBlob(entitlements));
         sb.blobs.push_back(entitlements);
@@ -320,6 +326,73 @@ static std::vector<std::vector<uint8_t>> computeCDHashes(const std::string& file
     return out;
 }
 
+// Snapshot of metadata pulled from an existing signature, used to honour
+// --preserve-metadata when re-signing.
+struct ExistingSignature {
+    bool present = false;
+    std::string identifier;
+    std::string entitlementsXml;
+    uint32_t flags = 0;
+    uint32_t runtime = 0;
+};
+
+// Read identifier / entitlements XML / flags / runtime from the first
+// architecture slice that has an embedded SuperBlob. Returns present=false if
+// the binary isn't signed at all.
+static ExistingSignature readExistingSignature(const std::string &filename) {
+    ExistingSignature out{};
+    MachOList list{filename};
+    for (const auto &macho : list.machos) {
+        auto cs = macho->getCodeSignatureLoadCommand();
+        if (!cs) continue;
+
+        std::ifstream in(filename, std::ifstream::binary);
+        if (!in.is_open()) continue;
+        in.seekg(macho->offset + cs->data.dataOff);
+        std::vector<char> buf(cs->data.dataSize);
+        in.read(buf.data(), buf.size());
+        if (static_cast<size_t>(in.gcount()) != buf.size()) continue;
+
+        if (buf.size() < 12) continue;
+        if (readBE32(buf.data()) != CSMAGIC_EMBEDDED_SIGNATURE) continue;
+        uint32_t count = readBE32(buf.data() + 8);
+
+        for (uint32_t i = 0; i < count; i++) {
+            size_t indexEntry = 12 + size_t{i} * 8;
+            if (indexEntry + 8 > buf.size()) break;
+            uint32_t blobOff = readBE32(buf.data() + indexEntry + 4);
+            if (blobOff + 8 > buf.size()) continue;
+            uint32_t blobMagic = readBE32(buf.data() + blobOff);
+            uint32_t blobLen = readBE32(buf.data() + blobOff + 4);
+            if (blobOff + blobLen > buf.size()) continue;
+
+            if (blobMagic == CSMAGIC_CODEDIRECTORY) {
+                if (blobLen < 44) continue;
+                uint32_t version = readBE32(buf.data() + blobOff + 8);
+                out.flags = readBE32(buf.data() + blobOff + 12);
+                uint32_t identOffset = readBE32(buf.data() + blobOff + 20);
+                if (identOffset < blobLen) {
+                    const char *id = buf.data() + blobOff + identOffset;
+                    size_t maxLen = blobLen - identOffset;
+                    size_t idLen = ::strnlen(id, maxLen);
+                    out.identifier.assign(id, idLen);
+                }
+                if (version >= 0x20500 && blobLen >= 92) {
+                    out.runtime = readBE32(buf.data() + blobOff + 88);
+                }
+            } else if (blobMagic == CSMAGIC_EMBEDDED_ENTITLEMENTS) {
+                if (blobLen >= 8) {
+                    out.entitlementsXml.assign(
+                            buf.data() + blobOff + 8, blobLen - 8);
+                }
+            }
+        }
+        out.present = true;
+        return out;
+    }
+    return out;
+}
+
 static std::string inferIdentifier(const std::string& filename) {
     // basename / basename_r are awkward to use. We don't need the exact
     // meaning of basename.
@@ -336,12 +409,11 @@ static std::string inferIdentifier(const std::string& filename) {
 }
 
 // Sign a single Mach-O file in place (handles allocation via codesign_allocate
-// and injection of the new signature).
-static void signOneMachO(const Commands::CodesignOptions &options,
+// and injection of the new signature). `signTemplate` carries everything the
+// CodeDirectory needs; `binaryFile` and `force` are flow control.
+static void signOneMachO(const Commands::SignOptions &signTemplate,
                          const std::string &binaryFile,
-                         const std::string &identifier,
-                         const std::string &infoPlistPath,
-                         const std::string &codeResourcesPath) {
+                         bool force) {
     MachOList list{binaryFile};
     std::vector<std::string> arguments;
 
@@ -349,20 +421,15 @@ static void signOneMachO(const Commands::CodesignOptions &options,
     arguments.emplace_back("-i");
     arguments.emplace_back(binaryFile);
 
+    Commands::SignOptions perFile = signTemplate;
+    perFile.filename = binaryFile;
+
     for (const auto &macho : list.machos) {
         auto codeSignature = macho->getCodeSignatureLoadCommand();
-        if (!options.force && codeSignature) {
+        if (!force && codeSignature) {
             throw std::runtime_error{"file is already signed. pass -f to sign regardless."};
         }
-        auto sb = signMachO(Commands::SignOptions{
-                .filename = binaryFile,
-                .identifier = identifier,
-                .entitlements = options.entitlements,
-                .generateEntitlementDER = options.generateEntitlementDER,
-                .hardenedRuntime = options.hardenedRuntime,
-                .infoPlistPath = infoPlistPath,
-                .codeResourcesPath = codeResourcesPath,
-        }, macho);
+        auto sb = signMachO(perFile, macho);
 
         arguments.emplace_back("-A");
         arguments.emplace_back(std::to_string(macho->header.cpuType));
@@ -421,15 +488,9 @@ static void signOneMachO(const Commands::CodesignOptions &options,
         throw std::runtime_error{std::string{"close: "} + strerror(tempfile)};
     }
 
-    Commands::inject(Commands::SignOptions{
-            .filename = std::string(tempfileName.get()),
-            .identifier = identifier,
-            .entitlements = options.entitlements,
-            .generateEntitlementDER = options.generateEntitlementDER,
-            .hardenedRuntime = options.hardenedRuntime,
-            .infoPlistPath = infoPlistPath,
-            .codeResourcesPath = codeResourcesPath,
-    });
+    Commands::SignOptions injectOpts = signTemplate;
+    injectOpts.filename = std::string(tempfileName.get());
+    Commands::inject(injectOpts);
 
     if (rename(tempfileName.get(), binaryFile.c_str()) != 0) {
         throw std::runtime_error{"rename failed"};
@@ -450,12 +511,43 @@ static void writeFileBytes(const std::string &path, const std::string &bytes) {
 int Commands::codesign(const CodesignOptions &options, const std::string &filename) {
     Bundle bundle = detectBundle(filename);
 
+    // Read existing signature only when at least one --preserve-metadata
+    // category was requested, to avoid an extra parse pass on every call.
+    ExistingSignature preserved{};
+    bool needPreserve = options.preserveIdentifier
+                        || options.preserveEntitlements
+                        || options.preserveFlags;
+    if (needPreserve) {
+        preserved = readExistingSignature(bundle.binaryPath);
+        if (!preserved.present) {
+            throw std::runtime_error{
+                    "--preserve-metadata: '" + bundle.binaryPath
+                    + "' has no existing signature to preserve from"};
+        }
+    }
+
     std::string identifier = options.identifier;
+    if (identifier.empty() && options.preserveIdentifier) {
+        identifier = preserved.identifier;
+    }
     if (identifier.empty()) identifier = bundle.identifier;
     if (identifier.empty()) identifier = inferIdentifier(bundle.binaryPath);
 
+    SignOptions signTemplate{};
+    signTemplate.identifier = identifier;
+    signTemplate.entitlements = options.entitlements;
+    signTemplate.generateEntitlementDER = options.generateEntitlementDER;
+    signTemplate.hardenedRuntime = options.hardenedRuntime;
+    if (options.preserveEntitlements) {
+        signTemplate.entitlementsData = preserved.entitlementsXml;
+    }
+    if (options.preserveFlags && (preserved.flags & CS_RUNTIME)) {
+        signTemplate.hardenedRuntime = true;
+        signTemplate.runtimeVersion = preserved.runtime;
+    }
+
     if (bundle.type == Bundle::Type::Single) {
-        signOneMachO(options, bundle.binaryPath, identifier, "", "");
+        signOneMachO(signTemplate, bundle.binaryPath, options.force);
         return 0;
     }
 
@@ -488,8 +580,9 @@ int Commands::codesign(const CodesignOptions &options, const std::string &filena
     std::string crPath = sigDir + "/CodeResources";
     writeFileBytes(crPath, codeResources);
 
-    signOneMachO(options, bundle.binaryPath, identifier,
-                 bundle.infoPlistPath, crPath);
+    signTemplate.infoPlistPath = bundle.infoPlistPath;
+    signTemplate.codeResourcesPath = crPath;
+    signOneMachO(signTemplate, bundle.binaryPath, options.force);
     return 0;
 }
 };
