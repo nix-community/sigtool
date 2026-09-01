@@ -21,6 +21,10 @@ namespace Commands {
         // Runtime version emitted when hardenedRuntime is set. 0 = derive
         // from the target's LC_BUILD_VERSION / LC_VERSION_MIN sdk field.
         uint32_t runtimeVersion;
+        // Additional CodeDirectory flag bits to set (CS_HARD, CS_KILL, ...).
+        // CS_RUNTIME is requested via hardenedRuntime instead, since it also
+        // needs the version bump and runtime field.
+        uint32_t extraFlags;
     };
 
     struct CodesignOptions {
@@ -29,6 +33,9 @@ namespace Commands {
         bool force;
         bool generateEntitlementDER;
         bool hardenedRuntime;
+        // True when -o/--options was passed on the CLI. An explicit -o
+        // replaces preserved flags entirely (Apple semantics).
+        bool optionsSpecified;
         // --preserve-metadata categories. When set, fields not explicitly
         // overridden on the CLI are taken from the existing signature.
         bool preserveIdentifier;

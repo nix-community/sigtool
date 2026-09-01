@@ -103,8 +103,10 @@ reusing fields from its existing signature. Supported keys:
   - `identifier` — reuse the existing CodeDirectory identifier (CLI `-i` still
     wins if both are passed)
   - `entitlements` — reuse the existing XML entitlements blob
-  - `flags` — preserve `CS_RUNTIME` (and its associated runtime SDK version)
-    from the original signature; other flag bits are not propagated
+  - `flags` — preserve the option flags from the original signature (`hard`,
+    `kill`, `restrict`, `library-validation`, `runtime` with its SDK version,
+    ...). An explicit `-o`/`--options` on the command line replaces the
+    preserved flags entirely, matching Apple's behaviour
 
 The binary must already be signed; otherwise `codesign` errors. Other
 `--preserve-metadata` keys (`requirements`, `team-identifier`, `runtime`,

@@ -224,6 +224,71 @@ check_bundle() {
   echo
 }
 
+# Re-sign a binary that Apple's codesign signed with option flags and
+# entitlements, preserving its metadata; identifier, flags (including the
+# runtime version) and entitlements must survive. An explicit -o must replace
+# the preserved flags, matching Apple's semantics.
+check_preserve_metadata() {
+  local name=preserve-metadata
+  local bin=tmp/preserve
+
+  echo "Checking --preserve-metadata against Apple's semantics"
+
+  cp tmp/test.arm64-darwin "$bin"
+  $APPLE_CODESIGN --remove-signature "$bin"
+  $APPLE_CODESIGN -s - -i com.example.preserve \
+      --entitlements entitlements.plist -o runtime,library,kill "$bin"
+  local before
+  before=$($APPLE_CODESIGN -dvvv "$bin" 2>&1 | grep -oE 'flags=[^ ]+')
+
+  local fail=0
+  if ! $OUR_CODESIGN -s - -f --preserve-metadata=identifier,entitlements,flags "$bin"; then
+    echo "FAIL: our codesign failed re-signing $bin"
+    fail=1
+  else
+    local info after
+    info=$($APPLE_CODESIGN -dvvv "$bin" 2>&1)
+    after=$(grep -oE 'flags=[^ ]+' <<<"$info")
+    if [ "$before" != "$after" ]; then
+      echo "FAIL: flags not preserved: before=$before after=$after"
+      fail=1
+    fi
+    if ! grep -q '^Identifier=com.example.preserve$' <<<"$info"; then
+      echo "FAIL: identifier not preserved"
+      fail=1
+    fi
+    if ! $APPLE_CODESIGN -d --entitlements - "$bin" 2>/dev/null \
+        | grep -q com.apple.security.cs.allow-jit; then
+      echo "FAIL: entitlements not preserved"
+      fail=1
+    fi
+    if ! $APPLE_CODESIGN --verify --strict "$bin"; then
+      echo "FAIL: codesign --verify rejected the preserved re-sign"
+      fail=1
+    fi
+
+    # An explicit -o replaces the preserved flags entirely.
+    if ! $OUR_CODESIGN -s - -f --preserve-metadata=flags -o runtime "$bin"; then
+      echo "FAIL: our codesign failed with --preserve-metadata=flags -o runtime"
+      fail=1
+    else
+      after=$($APPLE_CODESIGN -dvvv "$bin" 2>&1 | grep -oE 'flags=0x[0-9a-f]+')
+      if [ "$after" != "flags=0x10002" ]; then
+        echo "FAIL: explicit -o did not replace preserved flags: $after"
+        fail=1
+      fi
+    fi
+  fi
+
+  if [ "$fail" -eq 0 ]; then
+    echo "OK: $name"
+  else
+    failures+=("$name")
+  fi
+
+  echo
+}
+
 for f in "${files[@]}"; do
   resign "$f"
 done
@@ -233,6 +298,7 @@ for f in "${files[@]}"; do
 done
 
 check_bundle
+check_preserve_metadata
 
 if [ "${#failures[@]}" -eq 0 ]; then
   exit 0

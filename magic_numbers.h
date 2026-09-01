@@ -5,7 +5,19 @@ namespace SigTool {
 
 enum {
     CS_ADHOC = 0x00000002,
+    CS_HARD = 0x00000100,
+    CS_KILL = 0x00000200,
+    CS_CHECK_EXPIRATION = 0x00000400,
+    CS_RESTRICT = 0x00000800,
+    CS_ENFORCEMENT = 0x00001000,
+    CS_REQUIRE_LV = 0x00002000,
     CS_RUNTIME = 0x00010000,
+
+    // Option flag bits Apple's codesign carries over verbatim for
+    // --preserve-metadata=flags.
+    CS_PRESERVABLE_FLAGS = CS_HARD | CS_KILL | CS_CHECK_EXPIRATION
+                           | CS_RESTRICT | CS_ENFORCEMENT | CS_REQUIRE_LV
+                           | CS_RUNTIME,
 };
 
 enum {
