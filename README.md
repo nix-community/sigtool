@@ -95,6 +95,12 @@ used rather than inheriting from the outer.
 Non-bundle entries directly under those nested-bundle directories are not
 supported and will error.
 
+Extra Mach-O binaries next to the main executable (under `Contents/MacOS/`,
+or at the top level of a framework version) are also treated as nested code:
+they are signed individually and recorded as `cdhash` entries, matching
+Apple's resource rules. Non-Mach-O files there (e.g. shell scripts) are
+sealed by their file hash.
+
 ### Preserving existing metadata
 
 `--preserve-metadata=identifier,entitlements,flags` re-signs a binary while
