@@ -104,6 +104,7 @@ static int run(int argc, char **argv) {
             .force = force,
             .generateEntitlementDER = generateEntitlementDER,
             .hardenedRuntime = hardenedRuntime,
+            .optionsSpecified = !optionsFlags.empty(),
             .preserveIdentifier = preserveIdentifier,
             .preserveEntitlements = preserveEntitlements,
             .preserveFlags = preserveFlags,
