@@ -158,6 +158,11 @@ make_bundle_fixture() {
   # Loose dylib directly under Frameworks/
   cp tmp/libnested.dylib "$c/Frameworks/libnested.dylib"
 
+  # Second Mach-O binary and a shell script next to the main executable
+  cp tmp/libnested.dylib "$c/MacOS/helper"
+  printf '#!/bin/sh\necho x\n' > "$c/MacOS/script.sh"
+  chmod +x "$c/MacOS/script.sh"
+
   # Nested XPC service
   local xpc=$c/XPCServices/Svc.xpc
   mkdir -p "$xpc/Contents/MacOS" "$xpc/Contents/Resources"
@@ -187,7 +192,7 @@ check_bundle() {
   # must record them as cdhash entries rather than plain file hashes.
   if [ "$fail" -eq 0 ]; then
     local cr=$app/Contents/_CodeSignature/CodeResources
-    for entry in Frameworks/Foo.framework Frameworks/libnested.dylib XPCServices/Svc.xpc; do
+    for entry in Frameworks/Foo.framework Frameworks/libnested.dylib XPCServices/Svc.xpc MacOS/helper; do
       if ! grep -A2 "<key>$entry</key>" "$cr" | grep -q '<key>cdhash</key>'; then
         echo "FAIL: no cdhash entry for $entry in $name"
         fail=1
@@ -199,6 +204,16 @@ check_bundle() {
     fi
     if grep -q 'locversion.plist</key>' "$cr"; then
       echo "FAIL: locversion.plist should be omitted from $name"
+      fail=1
+    fi
+    # Extra Mach-O binaries must carry their own valid signature; plain
+    # scripts next to the binary stay sealed by hash.
+    if ! $APPLE_CODESIGN --verify --strict "$app/Contents/MacOS/helper"; then
+      echo "FAIL: MacOS/helper is not validly signed in $name"
+      fail=1
+    fi
+    if ! grep -A2 '<key>MacOS/script.sh</key>' "$cr" | grep -q '<key>hash2</key>'; then
+      echo "FAIL: no hash2 entry for MacOS/script.sh in $name"
       fail=1
     fi
     for pair in "$app:com.example.nested" \

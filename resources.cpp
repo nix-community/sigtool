@@ -4,6 +4,7 @@
 #include <cstring>
 #include <dirent.h>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <sys/stat.h>
@@ -254,6 +255,70 @@ const char* kRulesSection =
         "\t\t</dict>\n"
         "\t</dict>\n";
 
+bool isMachOFile(const std::string& path) {
+    std::ifstream in(path, std::ifstream::binary);
+    if (!in.is_open()) return false;
+    unsigned char b[4];
+    in.read(reinterpret_cast<char*>(b), 4);
+    if (in.gcount() != 4) return false;
+    uint32_t magic = (uint32_t(b[0]) << 24) | (uint32_t(b[1]) << 16)
+                     | (uint32_t(b[2]) << 8) | uint32_t(b[3]);
+    return magic == 0xfeedfacf || magic == 0xcffaedfe   // MH_MAGIC_64 both orders
+           || magic == 0xcafebabe || magic == 0xbebafeca; // FAT both orders
+}
+
+// The main binary's path relative to contentsRoot (empty if not below it).
+std::string binaryRelativePath(const Bundle& bundle) {
+    if (bundle.binaryPath.size() > bundle.contentsRoot.size() + 1
+        && bundle.binaryPath.compare(0, bundle.contentsRoot.size(),
+                                     bundle.contentsRoot) == 0
+        && bundle.binaryPath[bundle.contentsRoot.size()] == '/') {
+        return bundle.binaryPath.substr(bundle.contentsRoot.size() + 1);
+    }
+    return {};
+}
+
+std::vector<std::string> sortedDirEntries(const std::string& dirPath) {
+    std::vector<std::string> entries;
+    DIR* d = opendir(dirPath.c_str());
+    if (!d) return entries;
+    while (auto* ent = readdir(d)) {
+        std::string n = ent->d_name;
+        if (n == "." || n == "..") continue;
+        entries.push_back(n);
+    }
+    closedir(d);
+    std::sort(entries.begin(), entries.end());
+    return entries;
+}
+
+// Collect Mach-O regular files under `subdir` (recursively; "" = the
+// contentsRoot itself, non-recursive) into `out`, excluding `binaryRel`.
+// Apple's rules2 mark MacOS/ (any depth) and top-level files as nested code
+// (weight 10), so extra executables there must be signed and recorded as
+// cdhash entries rather than sealed by hash.
+void collectMachOFiles(const std::string& contentsRoot,
+                       const std::string& subdir,
+                       const std::string& binaryRel,
+                       std::vector<std::string>& out) {
+    std::string dirPath =
+            subdir.empty() ? contentsRoot : (contentsRoot + "/" + subdir);
+    for (const auto& n : sortedDirEntries(dirPath)) {
+        std::string rel = subdir.empty() ? n : (subdir + "/" + n);
+        std::string full = contentsRoot + "/" + rel;
+        struct stat st{};
+        if (lstat(full.c_str(), &st) != 0) continue;
+        if (S_ISLNK(st.st_mode)) continue;
+        if (S_ISDIR(st.st_mode)) {
+            if (!subdir.empty()) collectMachOFiles(contentsRoot, rel, binaryRel, out);
+            continue;
+        }
+        if (!S_ISREG(st.st_mode)) continue;
+        if (rel == binaryRel) continue;
+        if (isMachOFile(full)) out.push_back(rel);
+    }
+}
+
 } // namespace
 
 std::vector<std::string> findNestedBundles(const Bundle& bundle) {
@@ -298,6 +363,15 @@ std::vector<std::string> findNestedBundles(const Bundle& bundle) {
             }
         }
     }
+
+    // Extra Mach-O binaries next to the main one (MacOS/, or the top level
+    // for frameworks) are nested code under Apple's rules and must carry
+    // their own signature. Non-Mach-O files there (scripts etc.) stay
+    // sealed by hash, which Apple's verifier accepts.
+    std::string binaryRel = binaryRelativePath(bundle);
+    collectMachOFiles(bundle.contentsRoot, "MacOS", binaryRel, out);
+    collectMachOFiles(bundle.contentsRoot, "", binaryRel, out);
+
     return out;
 }
 
@@ -311,12 +385,7 @@ std::string generateCodeResources(const Bundle& bundle,
     }
 
     // Compute the binary's path RELATIVE to contentsRoot.
-    std::string binaryRel;
-    if (bundle.binaryPath.size() > bundle.contentsRoot.size() + 1
-        && bundle.binaryPath.compare(0, bundle.contentsRoot.size(), bundle.contentsRoot) == 0
-        && bundle.binaryPath[bundle.contentsRoot.size()] == '/') {
-        binaryRel = bundle.binaryPath.substr(bundle.contentsRoot.size() + 1);
-    }
+    std::string binaryRel = binaryRelativePath(bundle);
 
     bool omitRootInfoPlist = (bundle.type == Bundle::Type::App);
 
@@ -327,8 +396,12 @@ std::string generateCodeResources(const Bundle& bundle,
     // Filter and sort.
     std::vector<std::string> kept;
     kept.reserve(files.size());
+    std::set<std::string> nestedPaths;
+    for (const auto& n : nested) nestedPaths.insert(n.relativePath);
     for (const auto& rel : files) {
         if (isOmitted(rel, binaryRel, omitRootInfoPlist)) continue;
+        // Files signed as nested code are recorded as cdhash entries only.
+        if (nestedPaths.count(rel)) continue;
         kept.push_back(rel);
     }
     std::sort(kept.begin(), kept.end());
