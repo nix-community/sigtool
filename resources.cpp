@@ -31,21 +31,10 @@ std::string slurpFile(const std::string& path) {
     return ss.str();
 }
 
-bool isNestedBundleDirEntry(const std::string& relDir) {
-    static const char* nestedRoots[] = {
-            "Frameworks", "SharedFrameworks", "PlugIns", "Plug-ins",
-            "XPCServices", "Helpers"};
-    for (auto* r : nestedRoots) {
-        if (relDir == r) return true;
-    }
-    return false;
-}
-
 // Walk `dir` recursively, emitting every regular file's path RELATIVE to
 // `walkRoot` into `out`, and every symlink (path + readlink target) into
-// `links`. Skips directories, _CodeSignature/, and the immediate children of
-// nested-bundle directories (those are signed separately and recorded as
-// cdhash entries).
+// `links`. Skips _CodeSignature/ and directories in `nestedDirs` (those are
+// signed separately and recorded as cdhash entries).
 struct SymlinkEntry {
     std::string relativePath;
     std::string target;
@@ -66,6 +55,7 @@ std::string readLinkTarget(const std::string& path) {
 }
 
 void walk(const std::string& walkRoot, const std::string& subdir,
+          const std::set<std::string>& nestedDirs,
           std::vector<std::string>& out, std::vector<SymlinkEntry>& links) {
     std::string fullDir = subdir.empty() ? walkRoot : (walkRoot + "/" + subdir);
     DIR* d = opendir(fullDir.c_str());
@@ -90,11 +80,8 @@ void walk(const std::string& walkRoot, const std::string& subdir,
         }
         if (S_ISDIR(st.st_mode)) {
             if (rel == "_CodeSignature") continue;
-            // Nested-bundle dirs are skipped here; their immediate children
-            // are returned by findNestedBundles() and emitted as cdhash
-            // entries instead of file hashes.
-            if (subdir.empty() && isNestedBundleDirEntry(rel)) continue;
-            walk(walkRoot, rel, out, links);
+            if (nestedDirs.count(rel)) continue;
+            walk(walkRoot, rel, nestedDirs, out, links);
             continue;
         }
         if (S_ISREG(st.st_mode)) {
@@ -319,6 +306,49 @@ void collectMachOFiles(const std::string& contentsRoot,
     }
 }
 
+// Collect nested code below one of Apple's nested-code roots. Ordinary
+// directories are containers (Hammerspoon, for example, uses Frameworks/hs),
+// while recognised bundles are atomic and get recursively signed on their
+// own. Every regular file is returned so the signing pass rejects non-code
+// files in locations which Apple's resource rules require to be nested code.
+void collectNestedCode(const std::string& contentsRoot,
+                       const std::string& subdir,
+                       std::vector<std::string>& out) {
+    std::string dirPath = contentsRoot + "/" + subdir;
+    for (const auto& n : sortedDirEntries(dirPath)) {
+        std::string rel = subdir + "/" + n;
+        std::string full = contentsRoot + "/" + rel;
+        struct stat st{};
+        if (lstat(full.c_str(), &st) != 0) continue;
+        if (S_ISLNK(st.st_mode)) continue;
+        if (S_ISDIR(st.st_mode)) {
+            if (looksLikeBundleSuffix(n)) {
+                out.push_back(rel);
+            } else {
+                collectNestedCode(contentsRoot, rel, out);
+            }
+        } else if (S_ISREG(st.st_mode)) {
+            out.push_back(rel);
+        }
+    }
+}
+
+// Apple's default rules also classify a bundle placed directly at the
+// contents root as nested code. Frameworks use this for helpers such as
+// Sparkle's Versions/A/Updater.app. Ordinary top-level directories remain
+// resources and are handled by the resource walker.
+void collectTopLevelBundles(const std::string& contentsRoot,
+                            std::vector<std::string>& out) {
+    for (const auto& n : sortedDirEntries(contentsRoot)) {
+        if (!looksLikeBundleSuffix(n)) continue;
+        struct stat st{};
+        if (lstat((contentsRoot + "/" + n).c_str(), &st) == 0
+            && S_ISDIR(st.st_mode)) {
+            out.push_back(n);
+        }
+    }
+}
+
 } // namespace
 
 std::vector<std::string> findNestedBundles(const Bundle& bundle) {
@@ -329,40 +359,10 @@ std::vector<std::string> findNestedBundles(const Bundle& bundle) {
             "Frameworks", "SharedFrameworks", "PlugIns", "Plug-ins",
             "XPCServices", "Helpers"};
     for (auto* root : nestedRoots) {
-        std::string dirPath = bundle.contentsRoot + "/" + root;
-        DIR* d = opendir(dirPath.c_str());
-        if (!d) continue;
-        std::vector<std::string> children;
-        while (auto* ent = readdir(d)) {
-            std::string n = ent->d_name;
-            if (n == "." || n == "..") continue;
-            children.push_back(n);
-        }
-        closedir(d);
-        std::sort(children.begin(), children.end());
-
-        for (const auto& n : children) {
-            std::string full = dirPath + "/" + n;
-            struct stat st{};
-            if (lstat(full.c_str(), &st) != 0) continue;
-            if (S_ISLNK(st.st_mode)) continue;
-            // Bundle directories (recursively signed) and regular files
-            // (signed as a single Mach-O) are both treated as nested entries
-            // — they'll appear in CodeResources as cdhash entries.
-            if (S_ISDIR(st.st_mode)) {
-                if (!looksLikeBundleSuffix(n)) {
-                    throw std::runtime_error{
-                            "non-bundle directory '" + std::string{root} + "/"
-                            + n + "' under " + bundle.contentsRoot
-                            + " is not supported (expected *.framework, "
-                              "*.app, *.xpc, or *.bundle)"};
-                }
-                out.push_back(std::string{root} + "/" + n);
-            } else if (S_ISREG(st.st_mode)) {
-                out.push_back(std::string{root} + "/" + n);
-            }
-        }
+        collectNestedCode(bundle.contentsRoot, root, out);
     }
+
+    collectTopLevelBundles(bundle.contentsRoot, out);
 
     // Extra Mach-O binaries next to the main one (MacOS/, or the top level
     // for frameworks) are nested code under Apple's rules and must carry
@@ -389,15 +389,24 @@ std::string generateCodeResources(const Bundle& bundle,
 
     bool omitRootInfoPlist = (bundle.type == Bundle::Type::App);
 
+    std::set<std::string> nestedPaths;
+    std::set<std::string> nestedDirs;
+    for (const auto& n : nested) {
+        nestedPaths.insert(n.relativePath);
+        struct stat st{};
+        if (lstat((bundle.contentsRoot + "/" + n.relativePath).c_str(), &st) == 0
+            && S_ISDIR(st.st_mode)) {
+            nestedDirs.insert(n.relativePath);
+        }
+    }
+
     std::vector<std::string> files;
     std::vector<SymlinkEntry> links;
-    walk(bundle.contentsRoot, "", files, links);
+    walk(bundle.contentsRoot, "", nestedDirs, files, links);
 
     // Filter and sort.
     std::vector<std::string> kept;
     kept.reserve(files.size());
-    std::set<std::string> nestedPaths;
-    for (const auto& n : nested) nestedPaths.insert(n.relativePath);
     for (const auto& rel : files) {
         if (isOmitted(rel, binaryRel, omitRootInfoPlist)) continue;
         // Files signed as nested code are recorded as cdhash entries only.
