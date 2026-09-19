@@ -20,15 +20,16 @@ struct NestedCdHash {
 };
 
 // Discover nested code under the given bundle's contentsRoot: bundles and
-// files directly under known nested-bundle directories (Frameworks/,
+// files recursively below known nested-code directories (Frameworks/,
 // SharedFrameworks/, PlugIns/, Plug-ins/, XPCServices/, Helpers/), plus
-// extra Mach-O binaries under MacOS/ (any depth) and at the top level.
+// bundles and extra Mach-O binaries at the top level, and extra Mach-O
+// binaries under MacOS/ (any depth).
 // Returns relative paths suitable for both signing-each-nested and emitting
 // cdhash entries later.
 std::vector<std::string> findNestedBundles(const Bundle& bundle);
 
 // Generate a CodeResources XML plist for the given bundle. Hashes regular
-// files; emits cdhash entries (in files2 only) for each nested bundle
+// files; emits cdhash entries (in files2 only) for each nested code object
 // supplied in `nested`.
 std::string generateCodeResources(const Bundle& bundle,
                                   const std::vector<NestedCdHash>& nested);

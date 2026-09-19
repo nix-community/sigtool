@@ -112,8 +112,9 @@ resign_with_der_entitlements() {
 # Build an app bundle exercising the nested-bundle code paths, sign it with
 # our codesign, and require Apple's codesign to accept it with --deep --strict.
 # Covers: nested framework (with Versions/Current symlink layout and a
-# symlinked header), nested .xpc, loose dylib under Frameworks/, symlinked
-# resource, .lproj with locversion.plist, .DS_Store, PkgInfo.
+# symlinked header and a top-level helper app), nested .xpc, loose dylib under
+# Frameworks/, Mach-O files in an ordinary Frameworks/hs container, symlinked
+# resources, .lproj with locversion.plist, .DS_Store, PkgInfo.
 write_info_plist() {
   local path=$1 id=$2 exec=$3
   cat > "$path" <<EOF
@@ -155,8 +156,24 @@ make_bundle_fixture() {
   ln -s Versions/Current/Foo "$fw/Foo"
   ln -s Versions/Current/Resources "$fw/Resources"
 
+  # Framework versions may embed top-level helper bundles (as Sparkle does).
+  local updater=$fw/Versions/A/Updater.app/Contents
+  mkdir -p "$updater/MacOS" "$updater/Resources"
+  cp tmp/test.arm64-darwin "$updater/MacOS/Updater"
+  $APPLE_CODESIGN --remove-signature "$updater/MacOS/Updater"
+  write_info_plist "$updater/Info.plist" com.example.foo.updater Updater
+  echo status > "$updater/Resources/status.txt"
+
   # Loose dylib directly under Frameworks/
   cp tmp/libnested.dylib "$c/Frameworks/libnested.dylib"
+
+  # Ordinary directories below nested-code roots are containers, not bundles.
+  # Their code descendants are sealed individually in the outer bundle.
+  mkdir -p "$c/Frameworks/hs"
+  cp tmp/test "$c/Frameworks/hs/hs"
+  $APPLE_CODESIGN --remove-signature "$c/Frameworks/hs/hs"
+  cp tmp/libnested.dylib "$c/Frameworks/hs/libextension.dylib"
+  ln -s libextension.dylib "$c/Frameworks/hs/libalias.dylib"
 
   # Second Mach-O binary and a shell script next to the main executable
   cp tmp/libnested.dylib "$c/MacOS/helper"
@@ -192,7 +209,9 @@ check_bundle() {
   # must record them as cdhash entries rather than plain file hashes.
   if [ "$fail" -eq 0 ]; then
     local cr=$app/Contents/_CodeSignature/CodeResources
-    for entry in Frameworks/Foo.framework Frameworks/libnested.dylib XPCServices/Svc.xpc MacOS/helper; do
+    for entry in Frameworks/Foo.framework Frameworks/libnested.dylib \
+                 Frameworks/hs/hs Frameworks/hs/libextension.dylib \
+                 XPCServices/Svc.xpc MacOS/helper; do
       if ! grep -A2 "<key>$entry</key>" "$cr" | grep -q '<key>cdhash</key>'; then
         echo "FAIL: no cdhash entry for $entry in $name"
         fail=1
@@ -200,6 +219,10 @@ check_bundle() {
     done
     if ! grep -q '<key>Resources/link.txt</key>' "$cr"; then
       echo "FAIL: symlink Resources/link.txt not sealed in $name"
+      fail=1
+    fi
+    if ! grep -A2 '<key>Frameworks/hs/libalias.dylib</key>' "$cr" | grep -q '<key>symlink</key>'; then
+      echo "FAIL: nested-code container symlink not sealed in $name"
       fail=1
     fi
     if grep -q 'locversion.plist</key>' "$cr"; then
@@ -212,12 +235,20 @@ check_bundle() {
       echo "FAIL: MacOS/helper is not validly signed in $name"
       fail=1
     fi
+    for code in "$app/Contents/Frameworks/hs/hs" \
+                "$app/Contents/Frameworks/hs/libextension.dylib"; do
+      if ! $APPLE_CODESIGN --verify --strict "$code"; then
+        echo "FAIL: $code is not validly signed"
+        fail=1
+      fi
+    done
     if ! grep -A2 '<key>MacOS/script.sh</key>' "$cr" | grep -q '<key>hash2</key>'; then
       echo "FAIL: no hash2 entry for MacOS/script.sh in $name"
       fail=1
     fi
     for pair in "$app:com.example.nested" \
                 "$app/Contents/Frameworks/Foo.framework:com.example.foo" \
+                "$app/Contents/Frameworks/Foo.framework/Versions/A/Updater.app:com.example.foo.updater" \
                 "$app/Contents/XPCServices/Svc.xpc:com.example.svc"; do
       local path=${pair%%:*} id=${pair##*:}
       # Capture first: grep -q closing the pipe early trips pipefail.
@@ -228,6 +259,15 @@ check_bundle() {
         fail=1
       fi
     done
+    local fwcr=$app/Contents/Frameworks/Foo.framework/Versions/A/_CodeSignature/CodeResources
+    if ! grep -A2 '<key>Updater.app</key>' "$fwcr" | grep -q '<key>cdhash</key>'; then
+      echo "FAIL: no cdhash entry for framework helper app in $name"
+      fail=1
+    fi
+    if grep -q 'Updater.app/Contents/' "$fwcr"; then
+      echo "FAIL: framework helper app contents sealed as ordinary resources in $name"
+      fail=1
+    fi
   fi
 
   if [ "$fail" -eq 0 ]; then

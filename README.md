@@ -84,22 +84,21 @@ directory (or a `Foo.framework/Versions/X` subpath). For bundles it:
   - hashes `CodeResources` into CodeDirectory special slot 3
   - signs the inner Mach-O binary in place
 
-Nested bundles directly under `Frameworks/`, `SharedFrameworks/`, `PlugIns/`,
-`Plug-ins/`, `XPCServices/`, or `Helpers/` are signed recursively (deepest
-first), and recorded in the outer `CodeResources` as `cdhash` entries with a
-`requirement` covering every Mach-O slice. Signing options (`-o runtime`,
+Nested bundles and Mach-O files below `Frameworks/`, `SharedFrameworks/`,
+`PlugIns/`, `Plug-ins/`, `XPCServices/`, or `Helpers/` are signed recursively
+(deepest first), and recorded in the outer `CodeResources` as `cdhash` entries
+with a `requirement` covering every Mach-O slice. Ordinary directories below
+these locations are traversed as containers. Signing options (`-o runtime`,
 `--entitlements`, `--generate-entitlement-der`, `--preserve-metadata`) are
-propagated to nested signs; the nested bundle's own `CFBundleIdentifier` is
-used rather than inheriting from the outer.
+propagated to nested signs; a nested bundle's own `CFBundleIdentifier` is used
+rather than inheriting from the outer. Non-code regular files in these nested
+code locations are rejected, matching Apple's resource rules.
 
-Non-bundle entries directly under those nested-bundle directories are not
-supported and will error.
-
-Extra Mach-O binaries next to the main executable (under `Contents/MacOS/`,
-or at the top level of a framework version) are also treated as nested code:
-they are signed individually and recorded as `cdhash` entries, matching
-Apple's resource rules. Non-Mach-O files there (e.g. shell scripts) are
-sealed by their file hash.
+Nested bundles and extra Mach-O binaries next to the main executable (under
+`Contents/MacOS/`, or at the top level of a framework version) are also
+treated as nested code: they are signed individually and recorded as `cdhash`
+entries, matching Apple's resource rules. Non-Mach-O files there (e.g. shell
+scripts) are sealed by their file hash.
 
 ### Preserving existing metadata
 
