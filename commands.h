@@ -1,6 +1,7 @@
 #ifndef SIGTOOL_COMMANDS_H
 #define SIGTOOL_COMMANDS_H
 
+#include <cstdint>
 #include <string>
 
 namespace SigTool {

@@ -3,6 +3,8 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
+
 #include <sys/stat.h>
 #include <unistd.h>
 
