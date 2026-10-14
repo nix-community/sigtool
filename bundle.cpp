@@ -154,7 +154,7 @@ Bundle detectBundle(const std::string& rawPath) {
     }
 
     // App / generic .app-style bundle: Foo.app
-    if (endsWith(path, ".app") || endsWith(path, ".bundle") || endsWith(path, ".xpc")) {
+    if (endsWith(path, ".app") || endsWith(path, ".bundle") || endsWith(path, ".xpc") || endsWith(path, ".xctest")) {
         b.type = Bundle::Type::App;
         b.root = path;
         b.contentsRoot = path + "/Contents";
@@ -169,7 +169,7 @@ Bundle detectBundle(const std::string& rawPath) {
         std::string execName = values[1];
         if (execName.empty()) {
             std::string base = basename(path);
-            for (const auto& suffix : {".app", ".bundle", ".xpc"}) {
+            for (const auto& suffix : {".app", ".bundle", ".xpc", ".xctest"}) {
                 if (endsWith(base, suffix)) {
                     execName = base.substr(0, base.size() - std::string{suffix}.size());
                     break;
@@ -186,7 +186,7 @@ Bundle detectBundle(const std::string& rawPath) {
 
     throw std::runtime_error{
             "directory '" + rawPath + "' is not a recognised bundle "
-            "(*.framework, *.app, *.bundle, *.xpc)"};
+            "(*.framework, *.app, *.bundle, *.xpc, *.xctest)"};
 }
 
 };

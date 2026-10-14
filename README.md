@@ -73,7 +73,7 @@ error.
 
 ### Bundle signing
 
-`codesign` accepts a path to a `.framework`, `.app`, `.bundle`, or `.xpc`
+`codesign` accepts a path to a `.framework`, `.app`, `.bundle`, `.xpc`, or `.xctest`
 directory (or a `Foo.framework/Versions/X` subpath). For bundles it:
 
   - reads `CFBundleIdentifier` from `Info.plist` (XML or binary plist) as the
