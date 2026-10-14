@@ -91,7 +91,7 @@ void walk(const std::string& walkRoot, const std::string& subdir,
 }
 
 bool looksLikeBundleSuffix(const std::string& name) {
-    static const char* suffixes[] = {".framework", ".app", ".xpc", ".bundle"};
+    static const char* suffixes[] = {".framework", ".app", ".xpc", ".bundle", ".xctest"};
     for (auto* s : suffixes) {
         size_t sl = std::string{s}.size();
         if (name.size() > sl
