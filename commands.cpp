@@ -100,6 +100,10 @@ static SuperBlob signMachO(
         codeDirectory->data.execSegFlags |= CS_EXECSEG_MAIN_BINARY;
     }
 
+    if (options.extraFlags) {
+        codeDirectory->data.flags |= options.extraFlags;
+    }
+
     if (options.hardenedRuntime) {
         codeDirectory->setHardenedRuntime(
                 options.runtimeVersion ? options.runtimeVersion : target->sdkVersion());
@@ -543,9 +547,15 @@ int Commands::codesign(const CodesignOptions &options, const std::string &filena
     if (options.preserveEntitlements && options.entitlements.empty()) {
         signTemplate.entitlementsData = preserved.entitlementsXml;
     }
-    if (options.preserveFlags && (preserved.flags & CS_RUNTIME)) {
-        signTemplate.hardenedRuntime = true;
-        signTemplate.runtimeVersion = preserved.runtime;
+    // Apple semantics: an explicit -o/--options replaces the preserved flags
+    // entirely; otherwise every option flag bit is carried over verbatim.
+    if (options.preserveFlags && !options.optionsSpecified) {
+        signTemplate.extraFlags =
+                preserved.flags & (CS_PRESERVABLE_FLAGS & ~uint32_t{CS_RUNTIME});
+        if (preserved.flags & CS_RUNTIME) {
+            signTemplate.hardenedRuntime = true;
+            signTemplate.runtimeVersion = preserved.runtime;
+        }
     }
 
     if (bundle.type == Bundle::Type::Single) {
