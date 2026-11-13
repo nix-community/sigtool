@@ -20,9 +20,13 @@ static int run(int argc, char **argv) {
     std::string identity, identifier, entitlements, timestamp, optionsFlags,
             preserveMetadata;
     bool force = false;
+    bool remove = false;
+    bool verify = false;
     bool generateEntitlementDER = false;
     std::vector<std::string> files;
-    app.add_option("-s,--sign", identity, "Code signing identity")->required();
+    auto sign = app.add_option("-s,--sign", identity, "Code signing identity");
+    app.add_flag("--remove-signature", remove, "Remove existing signature");
+    app.add_flag("-v", verify, "Verify existing signatures");
     app.add_option("-i,--identifier", identifier, "File identifier");
     app.add_flag("-f,--force", force, "Replace any existing signatures");
     app.add_option("--entitlements", entitlements, "Entitlements plist");
@@ -52,53 +56,63 @@ static int run(int argc, char **argv) {
                             "is not available with ad-hoc signatures)"}};
     }
 
-    if (identity != std::string{"-"}) {
-        throw std::runtime_error{
+    if (verify) {
+        for (const auto &f : files) {
+            if (!SigTool::Commands::verifySignature(f))
+                return 1;
+        }
+    } else if (remove) {
+        for (const auto &f : files) {
+            SigTool::Commands::removeSignature(f);
+        }
+    } else {
+        if (identity != std::string{"-"}) {
+            throw std::runtime_error{
                 std::string{"Only ad-hoc identities supported, requested: '"} + identity + "'"};
-    }
+        }
 
-    bool hardenedRuntime = false;
-    if (!optionsFlags.empty()) {
-        size_t start = 0;
-        while (start <= optionsFlags.size()) {
-            size_t comma = optionsFlags.find(',', start);
-            if (comma == std::string::npos) comma = optionsFlags.size();
-            std::string opt = optionsFlags.substr(start, comma - start);
-            if (opt == "runtime") {
-                hardenedRuntime = true;
-            } else if (!opt.empty()) {
-                throw std::runtime_error{
+        bool hardenedRuntime = false;
+        if (!optionsFlags.empty()) {
+            size_t start = 0;
+            while (start <= optionsFlags.size()) {
+                size_t comma = optionsFlags.find(',', start);
+                if (comma == std::string::npos) comma = optionsFlags.size();
+                std::string opt = optionsFlags.substr(start, comma - start);
+                if (opt == "runtime") {
+                    hardenedRuntime = true;
+                } else if (!opt.empty()) {
+                    throw std::runtime_error{
                         "-o option '" + opt + "' is not supported "
                         "(only 'runtime' is recognised)"};
+                }
+                if (comma == optionsFlags.size()) break;
+                start = comma + 1;
             }
-            if (comma == optionsFlags.size()) break;
-            start = comma + 1;
         }
-    }
 
-    bool preserveIdentifier = false;
-    bool preserveEntitlements = false;
-    bool preserveFlags = false;
-    if (!preserveMetadata.empty()) {
-        size_t start = 0;
-        while (start <= preserveMetadata.size()) {
-            size_t comma = preserveMetadata.find(',', start);
-            if (comma == std::string::npos) comma = preserveMetadata.size();
-            std::string key = preserveMetadata.substr(start, comma - start);
-            if (key == "identifier") preserveIdentifier = true;
-            else if (key == "entitlements") preserveEntitlements = true;
-            else if (key == "flags") preserveFlags = true;
-            else if (!key.empty()) {
-                throw std::runtime_error{
+        bool preserveIdentifier = false;
+        bool preserveEntitlements = false;
+        bool preserveFlags = false;
+        if (!preserveMetadata.empty()) {
+            size_t start = 0;
+            while (start <= preserveMetadata.size()) {
+                size_t comma = preserveMetadata.find(',', start);
+                if (comma == std::string::npos) comma = preserveMetadata.size();
+                std::string key = preserveMetadata.substr(start, comma - start);
+                if (key == "identifier") preserveIdentifier = true;
+                else if (key == "entitlements") preserveEntitlements = true;
+                else if (key == "flags") preserveFlags = true;
+                else if (!key.empty()) {
+                    throw std::runtime_error{
                         "--preserve-metadata key '" + key + "' is not supported "
                         "(supported: identifier, entitlements, flags)"};
+                }
+                if (comma == preserveMetadata.size()) break;
+                start = comma + 1;
             }
-            if (comma == preserveMetadata.size()) break;
-            start = comma + 1;
         }
-    }
 
-    SigTool::Commands::CodesignOptions options{
+        SigTool::Commands::CodesignOptions options{
             .identifier = identifier,
             .entitlements = entitlements,
             .force = force,
@@ -107,10 +121,11 @@ static int run(int argc, char **argv) {
             .preserveIdentifier = preserveIdentifier,
             .preserveEntitlements = preserveEntitlements,
             .preserveFlags = preserveFlags,
-    };
+        };
 
-    for (const auto &f : files) {
-	SigTool::Commands::codesign(options, f);
+        for (const auto &f : files) {
+            SigTool::Commands::codesign(options, f);
+        }
     }
 
     return 0;
